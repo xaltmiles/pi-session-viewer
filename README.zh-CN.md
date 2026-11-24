@@ -36,7 +36,7 @@ pi install npm:@hfrancisla/pi-session-viewer
 
 ## 安全与隐私
 
-- **仅限本地访问**：严格监听 `127.0.0.1`，并为每次启动生成独立的 Bearer Token。无云端同步、无遥测上报、无远程访问。
+- **可信网络访问**：服务器绑定 `0.0.0.0`，启动时打印 LAN/Tailscale 访问地址；每个 `/api` 请求仍需随实例生成的随机 Bearer Token。无云端同步、无遥测上报；仅建议在可信网络中使用。
 - **只读设计**：Web 界面无法修改会话或执行任何终端命令。
 - **捕获范围**：仅在本地会话文件中记录系统提示词、Skill 元数据与上下文文件快照。**绝不**记录 API Key、请求标头或敏感凭证。
 - **捕获精度与边界**：插件在 `before_provider_request` 阶段通过 Pi 的 `ctx.getSystemPrompt()` 及活动工具元数据记录 *Pi Harness 的提示词状态*，并展示会话中 Pi 原生持久化的 System Message 增量更新。但其他扩展在该钩子内对提供商最终请求 Payload 的修改不会反映到 `ctx.getSystemPrompt()`；本插件**不是** HTTP 原始请求录制器。上下文文件内容本身可能包含敏感数据，请妥善保管导出的会话文件。

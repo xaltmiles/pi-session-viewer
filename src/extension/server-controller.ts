@@ -1,13 +1,23 @@
 import { randomBytes } from 'node:crypto'
 import { startSessionHttpServer, type SessionHttpServer, type SessionHttpServerOptions } from '../server/http-server'
+import { viewerLanAddresses, type LanAddress } from '../server/lan-addresses'
 
 export type ServerControllerState = 'stopped' | 'starting' | 'running' | 'stopping'
+
+export type SessionViewerUrlKind = 'local' | 'lan' | 'tailscale'
+
+export interface SessionViewerPanelUrl {
+  readonly url: string
+  readonly kind: SessionViewerUrlKind
+}
 
 export interface SessionViewerPanel {
   readonly host: string
   readonly port: number
   readonly token: string
   readonly url: string
+  /** Every address the panel answers on; `url` is the local entry. */
+  readonly urls: readonly SessionViewerPanelUrl[]
 }
 
 export interface ServerControllerOptions {
@@ -17,6 +27,8 @@ export interface ServerControllerOptions {
   host?: string
   port?: number
   currentCwd?: string
+  /** Overrides LAN discovery for the panel URL list; injectable for tests. */
+  lanAddresses?: () => LanAddress[]
   startServer?: (options: SessionHttpServerOptions) => Promise<SessionHttpServer>
   createToken?: () => string
   openBrowser?: (url: string) => Promise<void> | void
@@ -32,20 +44,35 @@ function defaultToken(): string {
   return randomBytes(32).toString('base64url')
 }
 
-function panelFromServer(server: SessionHttpServer, cwd?: string, serverCwd?: string): SessionViewerPanel {
+function panelFromServer(
+  server: SessionHttpServer,
+  cwd: string | undefined,
+  serverCwd: string | undefined,
+  lanAddresses: LanAddress[],
+): SessionViewerPanel {
   const hash = new URLSearchParams({ token: server.token })
   if (cwd && cwd !== serverCwd) hash.set('cwd', cwd)
+  const suffix = hash.toString()
+  const urls: SessionViewerPanelUrl[] = [
+    { url: `${server.url}/#${suffix}`, kind: 'local' },
+    ...lanAddresses.map((address): SessionViewerPanelUrl => ({
+      url: `http://${address.ip}:${server.port}/#${suffix}`,
+      kind: address.kind,
+    })),
+  ]
   return {
     host: server.host,
     port: server.port,
     token: server.token,
-    url: `${server.url}/#${hash.toString()}`,
+    url: urls[0].url,
+    urls,
   }
 }
 
 export function createServerController(options: ServerControllerOptions): ServerController {
   const startServer = options.startServer ?? startSessionHttpServer
   const createToken = options.createToken ?? defaultToken
+  const resolveLanAddresses = options.lanAddresses ?? viewerLanAddresses
   let state: ServerControllerState = 'stopped'
   let server: SessionHttpServer | undefined
   let panel: SessionViewerPanel | undefined
@@ -65,7 +92,7 @@ export function createServerController(options: ServerControllerOptions): Server
 
   const start = async (cwd?: string): Promise<SessionViewerPanel> => {
     if (cwd) activeCwd = cwd
-    if (panel && state === 'running' && server) return panelFromServer(server, activeCwd, serverCwd)
+    if (panel && state === 'running' && server) return panelFromServer(server, activeCwd, serverCwd, resolveLanAddresses())
     if (startPromise) return startPromise
     if (stopPromise) await stopPromise
 
@@ -84,7 +111,7 @@ export function createServerController(options: ServerControllerOptions): Server
         })
         server = started
         serverCwd = serverCwdAtStart
-        panel = panelFromServer(started, activeCwd, serverCwd)
+        panel = panelFromServer(started, activeCwd, serverCwd, resolveLanAddresses())
         state = 'running'
         if (options.openBrowser) {
           try {

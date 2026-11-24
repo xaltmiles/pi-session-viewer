@@ -89,6 +89,36 @@ describe('session viewer server controller', () => {
     expect(second).toBe(first)
   })
 
+  it('advertises lan and tailscale urls that share the local token hash', async () => {
+    const token = 'e'.repeat(43)
+    const controller = createServerController({
+      sessionRoot: '/tmp/pi-sessions',
+      webRoot: '/tmp/pi-web',
+      createToken: () => token,
+      lanAddresses: () => [
+        { ip: '10.0.0.5', kind: 'lan' },
+        { ip: '100.77.12.7', kind: 'tailscale' },
+      ],
+      startServer: async () => ({
+        host: '0.0.0.0',
+        port: 43129,
+        token,
+        url: 'http://127.0.0.1:43129',
+        close: async () => {},
+      }),
+    })
+
+    const panel = await controller.start()
+
+    const hash = `token=${token}`
+    expect(panel.url).toBe(`http://127.0.0.1:43129/#${hash}`)
+    expect(panel.urls).toEqual([
+      { url: `http://127.0.0.1:43129/#${hash}`, kind: 'local' },
+      { url: `http://10.0.0.5:43129/#${hash}`, kind: 'lan' },
+      { url: `http://100.77.12.7:43129/#${hash}`, kind: 'tailscale' },
+    ])
+  })
+
   it('closes the running listener once and makes repeated stops harmless', async () => {
     let closeCount = 0
     const fakeServer: SessionHttpServer = {

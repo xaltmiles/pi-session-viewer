@@ -36,7 +36,7 @@ Restart Pi or run `/reload`. The extension loads automatically and begins captur
 
 ## Security & Privacy
 
-- **Local Only**: Listens strictly on `127.0.0.1` with a per-instance random bearer token. No cloud sync, telemetry, or remote access.
+- **Trusted-Network Access**: The server binds `0.0.0.0` and prints LAN/Tailscale URLs at startup, but every `/api` request still requires the per-instance random bearer token. No cloud sync or telemetry; intended for trusted networks only.
 - **Read-Only**: The web interface cannot mutate sessions or execute commands.
 - **Capture Scope**: Saves system prompts, skill metadata, and context file snapshots to local session files. Does **not** record API keys, request headers, or credentials.
 - **Prompt Fidelity**: Extension captures use Pi's `ctx.getSystemPrompt()` at the provider-request hook and Pi's active tool metadata. The browser also displays native, append-only system-message updates from the session. Provider-specific payload rewrites made by other `before_provider_request` handlers are **not** reflected in `ctx.getSystemPrompt()`; this is a Pi harness inspector, not a raw HTTP request recorder. Context-file contents can themselves contain sensitive data, so treat exported sessions as private.

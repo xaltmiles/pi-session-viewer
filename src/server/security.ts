@@ -11,8 +11,10 @@ function hostnameFromHeader(value: string | undefined): string | undefined {
 }
 
 export function isAllowedHost(value: string | undefined): boolean {
-  const hostname = hostnameFromHeader(value)
-  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1'
+  // This fork binds 0.0.0.0 so the panel also serves trusted LAN and Tailscale
+  // peers; any Host header is therefore accepted, because every /api request
+  // still requires the per-instance bearer token (see hasValidBearerToken).
+  return hostnameFromHeader(value) !== undefined
 }
 
 export function isAllowedOrigin(request: IncomingMessage): boolean {

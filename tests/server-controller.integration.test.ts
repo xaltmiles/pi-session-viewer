@@ -34,8 +34,10 @@ describe('session viewer server integration', () => {
       headers: { Authorization: `Bearer ${panel.token}` },
     })
 
-    expect(panel.host).toBe('127.0.0.1')
+    expect(panel.host).toBe('0.0.0.0')
     expect(panel.port).toBeGreaterThan(0)
+    expect(panel.urls[0]?.kind).toBe('local')
+    expect(panel.url.startsWith('http://127.0.0.1:')).toBe(true)
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({ status: 'ok', version: '0.1.0' })
 

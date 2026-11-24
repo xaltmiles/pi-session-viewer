@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { SessionListResponse } from '../src/core/types'
 import { startSessionHttpServer, type SessionHttpServer } from '../src/server/http-server'
+import { isAllowedHost } from '../src/server/security'
 import { encodeSessionToken } from '../src/server/session-discovery'
 import { piSessionHeader } from './helpers/pi-session'
 
@@ -76,7 +77,45 @@ async function requestRawPathStatus(url: string, requestPath: string, headers: R
   })
 }
 
+describe('isAllowedHost', () => {
+  it('accepts loopback and non-loopback hosts because the fork binds 0.0.0.0', () => {
+    expect(isAllowedHost('localhost:43110')).toBe(true)
+    expect(isAllowedHost('127.0.0.1')).toBe(true)
+    expect(isAllowedHost('[::1]:43110')).toBe(true)
+    expect(isAllowedHost('192.168.1.10:43110')).toBe(true)
+    expect(isAllowedHost('myhost.lan:43110')).toBe(true)
+    expect(isAllowedHost('evil.example.test')).toBe(true)
+  })
+
+  it('still rejects requests without any Host header', () => {
+    expect(isAllowedHost(undefined)).toBe(false)
+    expect(isAllowedHost('')).toBe(false)
+  })
+})
+
 describe('production session HTTP server security', () => {
+  it('accepts authenticated requests addressed through a non-local Host header', async () => {
+    const server = await createServer()
+
+    const status = await requestStatus(`${server.url}/api/health`, {
+      Authorization: `Bearer ${server.token}`,
+      Host: '192.168.1.10',
+    })
+
+    expect(status).toBe(200)
+  })
+
+  it('accepts a same-host origin next to its Host header', async () => {
+    const server = await createServer()
+
+    const status = await requestStatus(`${server.url}/api/health`, {
+      Authorization: `Bearer ${server.token}`,
+      Origin: server.url,
+    })
+
+    expect(status).toBe(200)
+  })
+
   it('rejects API requests without the instance token', async () => {
     const server = await createServer()
 
@@ -95,17 +134,6 @@ describe('production session HTTP server security', () => {
 
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({ status: 'ok', version: '0.1.0' })
-  })
-
-  it('rejects authenticated requests addressed through a non-local Host header', async () => {
-    const server = await createServer()
-
-    const status = await requestStatus(`${server.url}/api/health`, {
-      Authorization: `Bearer ${server.token}`,
-      Host: 'evil.example.test',
-    })
-
-    expect(status).toBe(403)
   })
 
   it('rejects authenticated cross-origin API requests', async () => {

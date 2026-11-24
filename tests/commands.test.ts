@@ -27,6 +27,7 @@ describe('/session-viewer command', () => {
       sessionRoot: '/tmp/pi-sessions',
       webRoot: '/tmp/pi-web',
       createToken: () => token,
+      lanAddresses: () => [],
       startServer: async (options) => {
         serverCwd = options.currentCwd
         return {
@@ -57,6 +58,7 @@ describe('/session-viewer command', () => {
       port: 43210,
       token: 'a'.repeat(64),
       url: 'http://127.0.0.1:43210/#token=' + 'a'.repeat(64),
+      urls: [{ url: 'http://127.0.0.1:43210/#token=' + 'a'.repeat(64), kind: 'local' }],
     }
     const controller: ServerController = {
       start: async () => panel,
@@ -80,6 +82,7 @@ describe('/session-viewer command', () => {
       port: 43210,
       token: 'a'.repeat(64),
       url: 'http://127.0.0.1:43210/#token=' + 'a'.repeat(64),
+      urls: [{ url: 'http://127.0.0.1:43210/#token=' + 'a'.repeat(64), kind: 'local' }],
     }
     const controller: ServerController = {
       start: async () => panel,
@@ -96,6 +99,41 @@ describe('/session-viewer command', () => {
     expect(notifications).toEqual([
       'Viewer started at: http://127.0.0.1:43210/#token=' + 'a'.repeat(64),
       'Viewer started at: http://127.0.0.1:43210/#token=' + 'a'.repeat(64),
+    ])
+  })
+
+  it('appends one line per remote LAN or Tailscale address', async () => {
+    const registrations = new Map<string, RegisteredCommand>()
+    const notifications: string[] = []
+    const token = 'b'.repeat(43)
+    const controller = createServerController({
+      sessionRoot: '/tmp/pi-sessions',
+      webRoot: '/tmp/pi-web',
+      createToken: () => token,
+      lanAddresses: () => [
+        { ip: '192.168.1.7', kind: 'lan' },
+        { ip: '100.64.2.9', kind: 'tailscale' },
+      ],
+      startServer: async () => ({
+        host: '0.0.0.0',
+        port: 43211,
+        token,
+        url: 'http://127.0.0.1:43211',
+        close: async () => {},
+      }),
+    })
+    registerSessionViewerCommand({
+      registerCommand: (name, command) => registrations.set(name, command as RegisteredCommand),
+    }, controller)
+
+    await registrations.get('session-viewer')?.handler('on', commandContext(notifications))
+
+    expect(notifications).toEqual([
+      [
+        `Viewer started at: http://127.0.0.1:43211/#token=${token}`,
+        `LAN: http://192.168.1.7:43211/#token=${token}`,
+        `Tailscale: http://100.64.2.9:43211/#token=${token}`,
+      ].join('\n'),
     ])
   })
 

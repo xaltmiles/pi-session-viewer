@@ -34,6 +34,15 @@ function setSecurityHeaders(response: ServerResponse): void {
   response.setHeader('Referrer-Policy', 'no-referrer')
 }
 
+/**
+ * The address shown to the user for a bound host. Wildcard binds answer on
+ * every interface, and the panel/browser-open flow runs on the same machine,
+ * so they are advertised through loopback.
+ */
+export function displayHost(host: string): string {
+  return host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host
+}
+
 function sendJson(response: ServerResponse, statusCode: number, body: unknown): void {
   response.statusCode = statusCode
   response.setHeader('Content-Type', 'application/json; charset=utf-8')
@@ -100,7 +109,7 @@ async function handleRequest(
   setSecurityHeaders(response)
 
   if (!isAllowedHost(request.headers.host)) {
-    sendJson(response, 403, { error: 'Only local loopback access is allowed.' })
+    sendJson(response, 403, { error: 'A Host header is required.' })
     return
   }
 
@@ -220,7 +229,9 @@ function close(server: Server): Promise<void> {
 }
 
 export async function startSessionHttpServer(options: SessionHttpServerOptions): Promise<SessionHttpServer> {
-  const host = options.host ?? '127.0.0.1'
+  // The fork listens on all interfaces so trusted LAN/Tailscale peers can open
+  // the panel; /api requests are still guarded by the per-instance token.
+  const host = options.host ?? '0.0.0.0'
   const sessionBodies = createLruCache<string>({
     maxEntries: 8,
     maxWeight: SESSION_BODY_CACHE_WEIGHT,
@@ -234,7 +245,7 @@ export async function startSessionHttpServer(options: SessionHttpServerOptions):
     host,
     port,
     token: options.token,
-    url: `http://${host}:${port}`,
+    url: `http://${displayHost(host)}:${port}`,
     close: () => close(httpServer),
   }
 }
