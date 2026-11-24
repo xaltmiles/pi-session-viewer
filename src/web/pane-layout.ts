@@ -120,6 +120,46 @@ export function paneMinWidth(pane: ResizablePane): number {
 }
 
 /**
+ * 把已应用/持久化的布局宽度钳制到当前容器内（窗口缩放、恢复持久值后调用）。
+ * 先把低于最小值的宽度抬到最小值；若 sidebar + timeline + inspector 超出预算，
+ * 则按各窗格超出自身最小值的比例收缩，收缩后恰好回到预算。
+ * 已经合法的布局保持原样（例如 Equal 均分结果不会被扭曲）。
+ */
+export function fitLayoutToContainer(
+  sidebarW: number,
+  inspectorW: number,
+  containerWidth: number,
+  inspectorVisible: boolean,
+): { sidebarW: number; inspectorW: number | null } {
+  const budget = paneBudget(containerWidth, inspectorVisible)
+  if (!inspectorVisible) {
+    let sidebar = Math.max(PANE_MIN_WIDTHS.sidebar, Math.round(sidebarW))
+    const overflow = sidebar + PANE_MIN_WIDTHS.timeline - budget
+    if (overflow > 0) sidebar = Math.max(PANE_MIN_WIDTHS.sidebar, sidebar - overflow)
+    return { sidebarW: sidebar, inspectorW: null }
+  }
+  let sidebar = Math.max(PANE_MIN_WIDTHS.sidebar, Math.round(sidebarW))
+  let inspector = Math.max(PANE_MIN_WIDTHS.inspector, Math.round(inspectorW))
+  const overflow = sidebar + inspector + PANE_MIN_WIDTHS.timeline - budget
+  if (overflow > 0) {
+    const sidebarExcess = sidebar - PANE_MIN_WIDTHS.sidebar
+    const inspectorExcess = inspector - PANE_MIN_WIDTHS.inspector
+    const totalExcess = sidebarExcess + inspectorExcess
+    if (totalExcess >= overflow) {
+      // 按超出比例分摊：ceil 落在侧栏，余量记在详情面板；两侧都不会跌破最小值。
+      const sidebarShrink = Math.min(Math.ceil((overflow * sidebarExcess) / totalExcess), overflow)
+      sidebar -= sidebarShrink
+      inspector -= overflow - sidebarShrink
+    } else {
+      // 预算连最小值之和都放不下（仅出现在极窄视口）：全部退到最小值。
+      sidebar = PANE_MIN_WIDTHS.sidebar
+      inspector = PANE_MIN_WIDTHS.inspector
+    }
+  }
+  return { sidebarW: sidebar, inspectorW: inspector }
+}
+
+/**
  * Equal 预设：所有可见窗格均分预算宽度，时间轴吸收取整余量；
  * 均分结果低于时间轴最小值时，向最小值方向压缩其余窗格。
  * 返回侧栏与详情面板的宽度（详情面板不可见时为 null）。

@@ -15,6 +15,7 @@ import { Timeline, type TimelineHandle } from './components/Timeline'
 import {
   buildGridTemplateColumns,
   computeEqualWidths,
+  fitLayoutToContainer,
   inspectorWidthRange,
   normalizePaneLayout,
   PANE_DEFAULT_WIDTHS,
@@ -105,6 +106,7 @@ interface PaneDividerProps {
   className: string
   label: string
   valueNow: number
+  valueMax: number
   onDragStart: (pane: ResizablePane, event: ReactPointerEvent<HTMLDivElement>) => void
   onDragMove: (event: ReactPointerEvent<HTMLDivElement>) => void
   onDragEnd: (event: ReactPointerEvent<HTMLDivElement>) => void
@@ -113,7 +115,7 @@ interface PaneDividerProps {
 }
 
 /** 桌面端窗格分隔条：拖拽 / 双击复位 / 方向键调整（role="separator"）。 */
-function PaneDivider({ pane, className, label, valueNow, onDragStart, onDragMove, onDragEnd, onReset, onKeyDown }: PaneDividerProps) {
+function PaneDivider({ pane, className, label, valueNow, valueMax, onDragStart, onDragMove, onDragEnd, onReset, onKeyDown }: PaneDividerProps) {
   return (
     <div
       role="separator"
@@ -123,7 +125,7 @@ function PaneDivider({ pane, className, label, valueNow, onDragStart, onDragMove
       aria-label={label}
       aria-controls="workspace"
       aria-valuemin={pane === 'sidebar' ? PANE_MIN_WIDTHS.sidebar : PANE_MIN_WIDTHS.inspector}
-      aria-valuemax={PANE_MAX_WIDTH}
+      aria-valuemax={valueMax}
       aria-valuenow={valueNow}
       aria-valuetext={`${valueNow}px`}
       onPointerDown={(event) => onDragStart(pane, event)}
@@ -201,6 +203,7 @@ function App() {
   const paneDragRef = useRef<PaneDragSession | null>(null)
   const [paneLayout, setPaneLayout] = useState<PaneLayoutState>(readStoredPaneLayout)
   const paneLayoutRef = useRef(paneLayout)
+  const [workspaceWidth, setWorkspaceWidth] = useState<number | null>(null)
 
   useEffect(() => {
     paneLayoutRef.current = paneLayout
@@ -225,6 +228,35 @@ function App() {
     if (session.frame != null) cancelAnimationFrame(session.frame)
     paneDragRef.current = null
     workspaceRef.current?.classList.remove('is-pane-dragging')
+  }, [compactScreen])
+
+  // 容器宽度变化时（含挂载首帧）把已应用/恢复的布局重新钳制到当前容器，
+  // 避免旧的自定义/Equal 宽度在缩窗后溢出、裁切详情面板。同时为分隔条的
+  // aria-valuemax 提供容器推导的实际上限。
+  useEffect(() => {
+    const element = workspaceRef.current
+    if (!element || compactScreen) {
+      setWorkspaceWidth(null)
+      return
+    }
+    const sync = () => {
+      const containerWidth = element.getBoundingClientRect().width
+      setWorkspaceWidth(containerWidth)
+      const state = paneLayoutRef.current
+      if (paneDragRef.current || state.mode === 'default') return
+      const fitted = fitLayoutToContainer(
+        state.sidebarW ?? PANE_DEFAULT_WIDTHS.sidebar,
+        state.inspectorW ?? PANE_DEFAULT_WIDTHS.inspector,
+        containerWidth,
+        true,
+      )
+      const next = normalizePaneLayout({ mode: state.mode, sidebarW: fitted.sidebarW, inspectorW: fitted.inspectorW ?? undefined })
+      setPaneLayout((prev) => (prev.mode === next.mode && prev.sidebarW === next.sidebarW && prev.inspectorW === next.inspectorW ? prev : next))
+    }
+    sync()
+    const observer = new ResizeObserver(sync)
+    observer.observe(element)
+    return () => observer.disconnect()
   }, [compactScreen])
 
   const beginPaneDrag = useCallback((pane: ResizablePane, event: ReactPointerEvent<HTMLDivElement>) => {
@@ -283,9 +315,15 @@ function App() {
     }
     const element = workspaceRef.current
     if (!element) return
+    // 以松手时的 clientX 重新推导最终宽度（而非最近一次合并帧），保证松手点 == 提交布局。
     const containerWidth = element.getBoundingClientRect().width
-    const sidebarW = resizePaneWidth('sidebar', session.sidebarW, 0, containerWidth, true)
-    const inspectorW = resizePaneWidth('inspector', session.inspectorW, 0, containerWidth, true)
+    const delta = session.clientX - session.startPointerX
+    const sidebarW = session.pane === 'sidebar'
+      ? resizePaneWidth('sidebar', session.startWidth, delta, containerWidth, true)
+      : session.sidebarW
+    const inspectorW = session.pane === 'inspector'
+      ? resizePaneWidth('inspector', session.startWidth, delta, containerWidth, true)
+      : session.inspectorW
     setPaneLayout(normalizePaneLayout({ mode: 'custom', sidebarW, inspectorW }))
   }, [])
 
@@ -347,6 +385,9 @@ function App() {
 
   const effectiveSidebarW = paneLayout.sidebarW ?? PANE_DEFAULT_WIDTHS.sidebar
   const effectiveInspectorW = paneLayout.inspectorW ?? PANE_DEFAULT_WIDTHS.inspector
+  const workspaceBudget = workspaceWidth != null ? paneBudget(workspaceWidth, true) : null
+  const sidebarMaxWidth = workspaceBudget != null ? sidebarWidthRange(workspaceBudget, true).max : PANE_MAX_WIDTH
+  const inspectorMaxWidth = workspaceBudget != null ? inspectorWidthRange(workspaceBudget).max : PANE_MAX_WIDTH
 
   useEffect(() => {
     if (!compactScreen) {
@@ -587,7 +628,7 @@ function App() {
           <div className="layout-presets" role="group" aria-label={t.header.layoutPresetsLabel}>
             <button
               type="button"
-              className="preset-button desktop-only"
+              className="preset-button"
               onClick={applyDefaultPreset}
               aria-pressed={paneLayout.mode === 'default'}
               title={t.header.layoutDefaultTitle}
@@ -598,7 +639,7 @@ function App() {
             </button>
             <button
               type="button"
-              className="preset-button desktop-only"
+              className="preset-button"
               onClick={applyEqualPreset}
               aria-pressed={paneLayout.mode === 'equal'}
               title={t.header.layoutEqualTitle}
@@ -668,6 +709,7 @@ function App() {
             className="pane-divider--sidebar"
             label={t.header.sidebarDividerLabel}
             valueNow={effectiveSidebarW}
+            valueMax={sidebarMaxWidth}
             onDragStart={beginPaneDrag}
             onDragMove={movePaneDrag}
             onDragEnd={endPaneDrag}
@@ -802,6 +844,7 @@ function App() {
             className="pane-divider--inspector"
             label={t.header.inspectorDividerLabel}
             valueNow={effectiveInspectorW}
+            valueMax={inspectorMaxWidth}
             onDragStart={beginPaneDrag}
             onDragMove={movePaneDrag}
             onDragEnd={endPaneDrag}

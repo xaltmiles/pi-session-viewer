@@ -8,6 +8,7 @@ import {
   buildGridTemplateColumns,
   computeEqualWidths,
   dividerTrackCount,
+  fitLayoutToContainer,
   inspectorWidthRange,
   normalizePaneLayout,
   paneBudget,
@@ -228,6 +229,47 @@ describe('parsePaneLayout', () => {
       mode: 'custom',
       sidebarW: PANE_MIN_WIDTHS.sidebar,
       inspectorW: PANE_MIN_WIDTHS.inspector,
+    })
+  })
+})
+
+describe('fitLayoutToContainer', () => {
+  it('leaves already-valid layouts untouched (Equal split at the 1025px breakpoint)', () => {
+    const equal = computeEqualWidths(1025, true)
+    expect(fitLayoutToContainer(equal.sidebarW, equal.inspectorW ?? 0, 1025, true)).toEqual({ sidebarW: equal.sidebarW, inspectorW: equal.inspectorW })
+    expect(fitLayoutToContainer(240, 384, 1200, true)).toEqual({ sidebarW: 240, inspectorW: 384 })
+  })
+
+  it('re-clamps oversized persisted widths to the actual container and lands exactly on budget', () => {
+    // Equal 在 1920px 下保存 636/636，窗口缩到 1025px：按超出比例收缩回预算。
+    const fitted = fitLayoutToContainer(636, 636, 1025, true)
+    const budget = paneBudget(1025, true)
+    expect(fitted.sidebarW).toBeGreaterThanOrEqual(PANE_MIN_WIDTHS.sidebar)
+    expect(fitted.inspectorW).toBeGreaterThanOrEqual(PANE_MIN_WIDTHS.inspector)
+    expect(fitted.sidebarW + (fitted.inspectorW ?? 0)).toBe(budget - PANE_MIN_WIDTHS.timeline)
+  })
+
+  it('shrinks panes proportionally to their excess over the minimums', () => {
+    // 240 + 800 + 480 = 1520 > 1001 预算：详情面板超出多，承担主要收缩。
+    const fitted = fitLayoutToContainer(240, 800, 1013, true)
+    expect(fitted.sidebarW).toBeGreaterThanOrEqual(PANE_MIN_WIDTHS.sidebar)
+    expect(fitted.inspectorW ?? 0).toBeLessThan(800)
+    expect(fitted.sidebarW + (fitted.inspectorW ?? 0)).toBe(paneBudget(1013, true) - PANE_MIN_WIDTHS.timeline)
+  })
+
+  it('raises sub-minimum widths back to the minimums', () => {
+    expect(fitLayoutToContainer(120, 200, 1400, true)).toEqual({ sidebarW: PANE_MIN_WIDTHS.sidebar, inspectorW: PANE_MIN_WIDTHS.inspector })
+  })
+
+  it('falls back to bare minimums when the budget cannot fit them', () => {
+    const fitted = fitLayoutToContainer(400, 400, 900, true)
+    expect(fitted).toEqual({ sidebarW: PANE_MIN_WIDTHS.sidebar, inspectorW: PANE_MIN_WIDTHS.inspector })
+  })
+
+  it('clamps the sidebar when the inspector is hidden', () => {
+    expect(fitLayoutToContainer(900, 384, 1000, false)).toEqual({
+      sidebarW: paneBudget(1000, false) - PANE_MIN_WIDTHS.timeline,
+      inspectorW: null,
     })
   })
 })

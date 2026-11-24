@@ -35,6 +35,12 @@ screens use drawer modes.
   container width at apply time (or via `1fr` in CSS — preferred if clean).
 
 ## Constraints
+
+> Reviewer-accepted deviation: at the 1025–1180px medium breakpoint the CSS
+> timeline minimum is 424px (not 480px) so sidebar + divider tracks + timeline
+> + inspector still fit a 1025px container without horizontal overflow. The
+> 480px minimum applies to presets, dragging, and the base (>1180px) grid.
+
 - No new npm dependencies.
 - Do not break `react-virtuoso` behavior: the timeline keeps its 480px minimum
   and must not scroll-jump while dragging (recalculation during drag is fine if
