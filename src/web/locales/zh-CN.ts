@@ -41,6 +41,13 @@ export const zhCN: Translations = {
     operationFailed: '操作失败。',
     failedToLoadSubagent: (err: string) => `加载子 Agent 会话失败：${err}`,
     copySessionPath: '复制会话路径',
+    layoutPresetsLabel: '布局预设',
+    layoutDefault: '默认',
+    layoutEqual: '等分',
+    layoutDefaultTitle: '布局：默认窗格宽度',
+    layoutEqualTitle: '布局：等分窗格宽度',
+    sidebarDividerLabel: '调整会话列表宽度：拖动分隔条，或用左右方向键调节；双击恢复默认。',
+    inspectorDividerLabel: '调整详情面板宽度：拖动分隔条，或用左右方向键调节；双击恢复默认。',
   },
   sidebar: {
     heading: '会话',

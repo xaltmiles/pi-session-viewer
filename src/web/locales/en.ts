@@ -40,6 +40,13 @@ export const en = {
     operationFailed: 'The operation failed.',
     failedToLoadSubagent: (err: string) => `Failed to load subagent session: ${err}`,
     copySessionPath: 'Copy session path',
+    layoutPresetsLabel: 'Layout presets',
+    layoutDefault: 'Default',
+    layoutEqual: 'Equal',
+    layoutDefaultTitle: 'Layout: default pane widths',
+    layoutEqualTitle: 'Layout: equal pane widths',
+    sidebarDividerLabel: 'Resize sessions pane. Drag, or press Left and Right arrow keys; double-click resets.',
+    inspectorDividerLabel: 'Resize details pane. Drag, or press Left and Right arrow keys; double-click resets.',
   },
   sidebar: {
     heading: 'Sessions',

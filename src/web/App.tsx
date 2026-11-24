@@ -1,9 +1,35 @@
-import { AlertCircle, ArrowLeft, Bot, Clock3, Copy, FolderOpen, Menu, PanelRightOpen, RefreshCw, Rows3, Search, X } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { AlertCircle, ArrowLeft, Bot, Clock3, Columns3, Copy, FolderOpen, LayoutPanelTop, Menu, PanelRightOpen, RefreshCw, Rows3, Search, X } from 'lucide-react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import { fetchSession, fetchSessions, resolveSession } from './api'
 import { Inspector } from './components/Inspector'
 import { SessionSidebar } from './components/SessionSidebar'
 import { Timeline, type TimelineHandle } from './components/Timeline'
+import {
+  buildGridTemplateColumns,
+  computeEqualWidths,
+  inspectorWidthRange,
+  normalizePaneLayout,
+  PANE_DEFAULT_WIDTHS,
+  PANE_MAX_WIDTH,
+  PANE_MIN_WIDTHS,
+  PANE_STORAGE_KEY,
+  paneBudget,
+  parsePaneLayout,
+  resizePaneWidth,
+  serializePaneLayout,
+  sidebarWidthRange,
+  stepPaneWidth,
+  type PaneLayoutState,
+  type ResizablePane,
+} from './pane-layout'
 import { formatDateTime, formatDuration } from '../core/format'
 import { parseSessionJsonl } from '../core/session-parser'
 import { buildSessionView } from '../core/session-view'
@@ -30,6 +56,84 @@ function subscribeToCompactScreen(onChange: () => void) {
 
 function isCompactScreen() {
   return window.matchMedia(compactQuery).matches
+}
+
+/* ---- 窗格布局（pane layout）：持久化 IO + DOM 测量，几何运算在 pane-layout.ts ---- */
+
+function readStoredPaneLayout(): PaneLayoutState {
+  try {
+    const raw = localStorage.getItem(PANE_STORAGE_KEY)
+    if (!raw) return { mode: 'default' }
+    return parsePaneLayout(raw) ?? { mode: 'default' }
+  } catch {
+    return { mode: 'default' }
+  }
+}
+
+function writeStoredPaneLayout(state: PaneLayoutState) {
+  try {
+    localStorage.setItem(PANE_STORAGE_KEY, serializePaneLayout(state))
+  } catch {
+    // ignore write failures (private mode, quota)
+  }
+}
+
+/** 读取 `.workspace` 当前实际列宽（Default 模式由样式表决定，含响应式断点）。 */
+function measureWorkspaceColumns(element: HTMLElement): { sidebarW: number; inspectorW: number } | null {
+  const columns = getComputedStyle(element).gridTemplateColumns
+  const widths = columns
+    .split(' ')
+    .map((value) => Number.parseFloat(value))
+    .filter((value) => Number.isFinite(value))
+  if (widths.length < 3) return null
+  return { sidebarW: widths[0], inspectorW: widths[widths.length - 1] }
+}
+
+interface PaneDragSession {
+  pane: ResizablePane
+  startWidth: number
+  startPointerX: number
+  clientX: number
+  sidebarW: number
+  inspectorW: number
+  frame: number | null
+  moved: boolean
+}
+
+interface PaneDividerProps {
+  pane: ResizablePane
+  className: string
+  label: string
+  valueNow: number
+  onDragStart: (pane: ResizablePane, event: ReactPointerEvent<HTMLDivElement>) => void
+  onDragMove: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onDragEnd: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onReset: (pane: ResizablePane) => void
+  onKeyDown: (pane: ResizablePane, event: ReactKeyboardEvent<HTMLDivElement>) => void
+}
+
+/** 桌面端窗格分隔条：拖拽 / 双击复位 / 方向键调整（role="separator"）。 */
+function PaneDivider({ pane, className, label, valueNow, onDragStart, onDragMove, onDragEnd, onReset, onKeyDown }: PaneDividerProps) {
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      className={`pane-divider ${className}`}
+      tabIndex={0}
+      aria-label={label}
+      aria-controls="workspace"
+      aria-valuemin={pane === 'sidebar' ? PANE_MIN_WIDTHS.sidebar : PANE_MIN_WIDTHS.inspector}
+      aria-valuemax={PANE_MAX_WIDTH}
+      aria-valuenow={valueNow}
+      aria-valuetext={`${valueNow}px`}
+      onPointerDown={(event) => onDragStart(pane, event)}
+      onPointerMove={onDragMove}
+      onPointerUp={onDragEnd}
+      onPointerCancel={onDragEnd}
+      onDoubleClick={() => onReset(pane)}
+      onKeyDown={(event) => onKeyDown(pane, event)}
+    />
+  )
 }
 
 function CopySessionPathButton({ path }: { path: string }) {
@@ -93,6 +197,156 @@ function App() {
   const fileInput = useRef<HTMLInputElement>(null)
   const timelineRef = useRef<TimelineHandle>(null)
   const drawerReturnFocusRef = useRef<HTMLElement | null>(null)
+  const workspaceRef = useRef<HTMLDivElement>(null)
+  const paneDragRef = useRef<PaneDragSession | null>(null)
+  const [paneLayout, setPaneLayout] = useState<PaneLayoutState>(readStoredPaneLayout)
+  const paneLayoutRef = useRef(paneLayout)
+
+  useEffect(() => {
+    paneLayoutRef.current = paneLayout
+    writeStoredPaneLayout(paneLayout)
+  }, [paneLayout])
+
+  // custom/equal 布局写内联 grid-template-columns；default 移除内联样式，
+  // 让样式表（含响应式断点）接管。紧凑模式下始终移除，避免内联样式压过抽屉布局。
+  useEffect(() => {
+    const element = workspaceRef.current
+    if (!element) return
+    const columns = compactScreen ? null : buildGridTemplateColumns(paneLayout, true)
+    if (columns === null) element.style.removeProperty('grid-template-columns')
+    else element.style.setProperty('grid-template-columns', columns)
+  }, [paneLayout, compactScreen])
+
+  // 拖拽中切到紧凑屏：分隔条随即卸载，丢弃会话并还原光标/选中态。
+  useEffect(() => {
+    if (!compactScreen) return
+    const session = paneDragRef.current
+    if (!session) return
+    if (session.frame != null) cancelAnimationFrame(session.frame)
+    paneDragRef.current = null
+    workspaceRef.current?.classList.remove('is-pane-dragging')
+  }, [compactScreen])
+
+  const beginPaneDrag = useCallback((pane: ResizablePane, event: ReactPointerEvent<HTMLDivElement>) => {
+    if (compactScreen || paneDragRef.current || event.button !== 0) return
+    const element = workspaceRef.current
+    if (!element) return
+    const measured = measureWorkspaceColumns(element)
+    if (!measured) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    event.currentTarget.classList.add('is-dragging')
+    paneDragRef.current = {
+      pane,
+      startWidth: pane === 'sidebar' ? measured.sidebarW : measured.inspectorW,
+      startPointerX: event.clientX,
+      clientX: event.clientX,
+      sidebarW: measured.sidebarW,
+      inspectorW: measured.inspectorW,
+      frame: null,
+      moved: false,
+    }
+    element.classList.add('is-pane-dragging')
+  }, [compactScreen])
+
+  // 拖拽期间直接写 DOM（rAF 合并），不逐帧触发 React 渲染，
+  // 时间轴 react-virtuoso 只经历平滑的宽度变化，不产生滚动跳变。
+  const movePaneDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const session = paneDragRef.current
+    const element = workspaceRef.current
+    if (!session || !element) return
+    session.clientX = event.clientX
+    if (!session.moved && Math.abs(session.clientX - session.startPointerX) > 2) session.moved = true
+    if (session.frame != null) return
+    session.frame = requestAnimationFrame(() => {
+      session.frame = null
+      if (paneDragRef.current !== session) return // 拖拽已被取消（如切到紧凑模式）
+      const containerWidth = element.getBoundingClientRect().width
+      const width = resizePaneWidth(session.pane, session.startWidth, session.clientX - session.startPointerX, containerWidth, true)
+      if (session.pane === 'sidebar') session.sidebarW = width
+      else session.inspectorW = width
+      const columns = buildGridTemplateColumns({ mode: 'custom', sidebarW: session.sidebarW, inspectorW: session.inspectorW }, true)
+      if (columns) element.style.setProperty('grid-template-columns', columns)
+    })
+  }, [])
+
+  const endPaneDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const session = paneDragRef.current
+    if (!session) return
+    paneDragRef.current = null
+    if (session.frame != null) cancelAnimationFrame(session.frame)
+    event.currentTarget.classList.remove('is-dragging')
+    workspaceRef.current?.classList.remove('is-pane-dragging')
+    if (event.type === 'pointercancel' || !session.moved) {
+      // 取消或未拖动：以提交过的布局为准，恢复内联样式（新对象强制 effect 重跑）。
+      setPaneLayout((prev) => ({ ...prev }))
+      return
+    }
+    const element = workspaceRef.current
+    if (!element) return
+    const containerWidth = element.getBoundingClientRect().width
+    const sidebarW = resizePaneWidth('sidebar', session.sidebarW, 0, containerWidth, true)
+    const inspectorW = resizePaneWidth('inspector', session.inspectorW, 0, containerWidth, true)
+    setPaneLayout(normalizePaneLayout({ mode: 'custom', sidebarW, inspectorW }))
+  }, [])
+
+  const handleDividerKeyDown = useCallback((pane: ResizablePane, event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (compactScreen) return
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return
+    const element = workspaceRef.current
+    if (!element) return
+    const containerWidth = element.getBoundingClientRect().width
+    let nextWidth: number
+    if (event.key === 'Home' || event.key === 'End') {
+      const range = pane === 'sidebar' ? sidebarWidthRange(paneBudget(containerWidth, true), true) : inspectorWidthRange(paneBudget(containerWidth, true))
+      nextWidth = event.key === 'Home' ? range.min : range.max
+    } else {
+      const committed = paneLayoutRef.current
+      const fallbackWidth = pane === 'sidebar'
+        ? committed.sidebarW ?? PANE_DEFAULT_WIDTHS.sidebar
+        : committed.inspectorW ?? PANE_DEFAULT_WIDTHS.inspector
+      const measured = measureWorkspaceColumns(element)
+      const currentWidth = measured ? (pane === 'sidebar' ? measured.sidebarW : measured.inspectorW) : fallbackWidth
+      // ArrowRight / ArrowLeft 均指分隔条移动方向：sidebar 右移变宽，inspector 右移变窄。
+      const direction = event.key === 'ArrowRight' ? 1 : -1
+      nextWidth = stepPaneWidth(pane, currentWidth, direction, containerWidth, true)
+    }
+    event.preventDefault()
+    const prev = paneLayoutRef.current
+    setPaneLayout(normalizePaneLayout({
+      mode: 'custom',
+      sidebarW: pane === 'sidebar' ? nextWidth : prev.sidebarW,
+      inspectorW: pane === 'inspector' ? nextWidth : prev.inspectorW,
+    }))
+  }, [compactScreen])
+
+  const resetPaneBoundary = useCallback((pane: ResizablePane) => {
+    if (compactScreen) return
+    setPaneLayout((prev) => normalizePaneLayout({
+      mode: 'custom',
+      sidebarW: pane === 'sidebar' ? PANE_DEFAULT_WIDTHS.sidebar : prev.sidebarW,
+      inspectorW: pane === 'inspector' ? PANE_DEFAULT_WIDTHS.inspector : prev.inspectorW,
+    }))
+  }, [compactScreen])
+
+  const applyDefaultPreset = useCallback(() => {
+    if (compactScreen) return
+    setPaneLayout({ mode: 'default' })
+  }, [compactScreen])
+
+  const applyEqualPreset = useCallback(() => {
+    if (compactScreen) return
+    const element = workspaceRef.current
+    if (!element) return
+    const widths = computeEqualWidths(element.getBoundingClientRect().width, true)
+    setPaneLayout(normalizePaneLayout({
+      mode: 'equal',
+      sidebarW: widths.sidebarW,
+      inspectorW: widths.inspectorW ?? undefined,
+    }))
+  }, [compactScreen])
+
+  const effectiveSidebarW = paneLayout.sidebarW ?? PANE_DEFAULT_WIDTHS.sidebar
+  const effectiveInspectorW = paneLayout.inspectorW ?? PANE_DEFAULT_WIDTHS.inspector
 
   useEffect(() => {
     if (!compactScreen) {
@@ -330,6 +584,30 @@ function App() {
         )}
         <div className="header-actions">
           {loadedAt && <span className="loaded-at"><Clock3 size={14} />{t.header.loadedAt(formatDateTime(loadedAt))}</span>}
+          <div className="layout-presets" role="group" aria-label={t.header.layoutPresetsLabel}>
+            <button
+              type="button"
+              className="preset-button desktop-only"
+              onClick={applyDefaultPreset}
+              aria-pressed={paneLayout.mode === 'default'}
+              title={t.header.layoutDefaultTitle}
+              aria-label={t.header.layoutDefaultTitle}
+            >
+              <LayoutPanelTop size={15} aria-hidden="true" />
+              <span>{t.header.layoutDefault}</span>
+            </button>
+            <button
+              type="button"
+              className="preset-button desktop-only"
+              onClick={applyEqualPreset}
+              aria-pressed={paneLayout.mode === 'equal'}
+              title={t.header.layoutEqualTitle}
+              aria-label={t.header.layoutEqualTitle}
+            >
+              <Columns3 size={15} aria-hidden="true" />
+              <span>{t.header.layoutEqual}</span>
+            </button>
+          </div>
           <button
             type="button"
             className="lang-toggle-button"
@@ -357,7 +635,7 @@ function App() {
         </div>
       </header>
 
-      <div className="workspace">
+      <div className="workspace" id="workspace" ref={workspaceRef}>
         <div
           className={`sidebar-layer${sidebarOpen ? ' is-open' : ''}`}
           inert={compactScreen && !sidebarOpen}
@@ -383,6 +661,20 @@ function App() {
             onClose={() => setSidebarOpen(false)}
           />
         </div>
+
+        {!compactScreen && (
+          <PaneDivider
+            pane="sidebar"
+            className="pane-divider--sidebar"
+            label={t.header.sidebarDividerLabel}
+            valueNow={effectiveSidebarW}
+            onDragStart={beginPaneDrag}
+            onDragMove={movePaneDrag}
+            onDragEnd={endPaneDrag}
+            onReset={resetPaneBoundary}
+            onKeyDown={handleDividerKeyDown}
+          />
+        )}
 
         <main className="main-stage" inert={Boolean(activeDrawer)}>
           {parsedSession && view && (
@@ -503,6 +795,20 @@ function App() {
             </div>
           )}
         </main>
+
+        {!compactScreen && (
+          <PaneDivider
+            pane="inspector"
+            className="pane-divider--inspector"
+            label={t.header.inspectorDividerLabel}
+            valueNow={effectiveInspectorW}
+            onDragStart={beginPaneDrag}
+            onDragMove={movePaneDrag}
+            onDragEnd={endPaneDrag}
+            onReset={resetPaneBoundary}
+            onKeyDown={handleDividerKeyDown}
+          />
+        )}
 
         <Inspector
           event={selectedEvent}
