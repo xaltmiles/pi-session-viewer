@@ -689,8 +689,7 @@ function hostnameFromHeader(value) {
   return normalized.split(":", 1)[0];
 }
 function isAllowedHost(value) {
-  const hostname = hostnameFromHeader(value);
-  return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+  return hostnameFromHeader(value) !== void 0;
 }
 function isAllowedOrigin(request) {
   const origin = request.headers.origin;
@@ -930,6 +929,9 @@ function setSecurityHeaders(response) {
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("Referrer-Policy", "no-referrer");
 }
+function displayHost(host) {
+  return host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+}
 function sendJson(response, statusCode, body) {
   response.statusCode = statusCode;
   response.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -967,7 +969,7 @@ async function sendSessionPayload(response, sessionBodies, absolute, relative, t
 async function handleRequest(request, response, options, sessionBodies) {
   setSecurityHeaders(response);
   if (!isAllowedHost(request.headers.host)) {
-    sendJson(response, 403, { error: "Only local loopback access is allowed." });
+    sendJson(response, 403, { error: "A Host header is required." });
     return;
   }
   if (!isAllowedOrigin(request)) {
@@ -1050,7 +1052,7 @@ async function handleRequest(request, response, options, sessionBodies) {
   }
   sendJson(response, 404, { error: "Requested resource not found." });
 }
-function listen(server2, host2, port2) {
+function listen(server2, host, port2) {
   return new Promise((resolve, reject) => {
     const onError = (error) => {
       server2.off("listening", onListening);
@@ -1063,7 +1065,7 @@ function listen(server2, host2, port2) {
     };
     server2.once("error", onError);
     server2.once("listening", onListening);
-    server2.listen(port2, host2);
+    server2.listen(port2, host);
   });
 }
 function close(server2) {
@@ -1073,7 +1075,7 @@ function close(server2) {
   });
 }
 async function startSessionHttpServer(options) {
-  const host2 = options.host ?? "127.0.0.1";
+  const host = options.host ?? "0.0.0.0";
   const sessionBodies = createLruCache({
     maxEntries: 8,
     maxWeight: SESSION_BODY_CACHE_WEIGHT,
@@ -1082,18 +1084,53 @@ async function startSessionHttpServer(options) {
   const httpServer = createServer((request, response) => {
     void handleRequest(request, response, options, sessionBodies);
   });
-  const port2 = await listen(httpServer, host2, options.port ?? 0);
+  const port2 = await listen(httpServer, host, options.port ?? 0);
   return {
-    host: host2,
+    host,
     port: port2,
     token: options.token,
-    url: `http://${host2}:${port2}`,
+    url: `http://${displayHost(host)}:${port2}`,
     close: () => close(httpServer)
   };
 }
 
+// src/server/lan-addresses.ts
+import os2 from "node:os";
+function ipv4Octets(ip) {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  const octets = parts.map((part) => Number(part));
+  if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return null;
+  return octets;
+}
+function classifyLanAddress(name, ip) {
+  if (/tailscale/i.test(name)) return "tailscale";
+  const octets = ipv4Octets(ip);
+  if (!octets) return null;
+  const [first, second] = octets;
+  if (first === 100 && second >= 64 && second <= 127) return "tailscale";
+  if (first === 10) return "lan";
+  if (first === 192 && second === 168) return "lan";
+  return null;
+}
+function viewerLanAddresses(networkInterfaces = os2.networkInterfaces) {
+  const addresses = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const [name, infos] of Object.entries(networkInterfaces())) {
+    for (const info of infos ?? []) {
+      if (info.internal) continue;
+      const family = String(info.family);
+      if (family !== "IPv4" && family !== "4") continue;
+      const kind = classifyLanAddress(name, info.address);
+      if (!kind || seen.has(info.address)) continue;
+      seen.add(info.address);
+      addresses.push({ ip: info.address, kind });
+    }
+  }
+  return addresses;
+}
+
 // src/server/standalone.ts
-var host = "127.0.0.1";
 var port = Number.parseInt(process.env.PORT ?? "0", 10);
 var token = process.env.PI_SESSION_VIEWER_TOKEN ?? randomBytes(32).toString("base64url");
 var webRoot = fileURLToPath(new URL("../web/", import.meta.url));
@@ -1101,12 +1138,15 @@ var server = await startSessionHttpServer({
   sessionRoot: configuredSessionRootSync(),
   webRoot,
   token,
-  host,
   port,
   version: typeof package_default.version === "string" ? package_default.version : "0.2.0",
   currentCwd: process.cwd()
 });
-process.stdout.write(`Pi session viewer started at: http://${server.host}:${server.port}
+var lines = [`Pi session viewer started at: ${server.url}`];
+for (const address of viewerLanAddresses()) {
+  lines.push(`${address.kind === "tailscale" ? "Tailscale" : "LAN"}: http://${address.ip}:${server.port}`);
+}
+process.stdout.write(`${lines.join("\n")}
 `);
 var shuttingDown = false;
 async function shutdown() {

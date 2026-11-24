@@ -92,6 +92,14 @@ var SESSION_VIEWER_USAGE = "Usage: /session-viewer on | off";
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
+function viewerStartNotification(panel) {
+  const lines = [`Viewer started at: ${panel.url}`];
+  for (const entry of panel.urls) {
+    if (entry.kind === "local") continue;
+    lines.push(`${entry.kind === "tailscale" ? "Tailscale" : "LAN"}: ${entry.url}`);
+  }
+  return lines.join("\n");
+}
 function registerSessionViewerCommand(pi, controller) {
   pi.registerCommand(SESSION_VIEWER_COMMAND, {
     description: "Start or stop the local Pi session viewer panel (defaults to on)",
@@ -100,7 +108,7 @@ function registerSessionViewerCommand(pi, controller) {
       if (command === "on" || command === "") {
         try {
           const panel = await controller.start(ctx.cwd);
-          ctx.ui.notify(`Viewer started at: ${panel.url}`, "info");
+          ctx.ui.notify(viewerStartNotification(panel), "info");
         } catch (error) {
           ctx.ui.notify(`Failed to start viewer: ${errorMessage(error)}`, "error");
         }
@@ -396,8 +404,7 @@ function hostnameFromHeader(value) {
   return normalized.split(":", 1)[0];
 }
 function isAllowedHost(value) {
-  const hostname = hostnameFromHeader(value);
-  return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+  return hostnameFromHeader(value) !== void 0;
 }
 function isAllowedOrigin(request) {
   const origin = request.headers.origin;
@@ -1159,6 +1166,9 @@ function setSecurityHeaders(response) {
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("Referrer-Policy", "no-referrer");
 }
+function displayHost(host) {
+  return host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+}
 function sendJson(response, statusCode, body) {
   response.statusCode = statusCode;
   response.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -1196,7 +1206,7 @@ async function sendSessionPayload(response, sessionBodies, absolute, relative, t
 async function handleRequest(request, response, options, sessionBodies) {
   setSecurityHeaders(response);
   if (!isAllowedHost(request.headers.host)) {
-    sendJson(response, 403, { error: "Only local loopback access is allowed." });
+    sendJson(response, 403, { error: "A Host header is required." });
     return;
   }
   if (!isAllowedOrigin(request)) {
@@ -1302,7 +1312,7 @@ function close(server) {
   });
 }
 async function startSessionHttpServer(options) {
-  const host = options.host ?? "127.0.0.1";
+  const host = options.host ?? "0.0.0.0";
   const sessionBodies = createLruCache({
     maxEntries: 8,
     maxWeight: SESSION_BODY_CACHE_WEIGHT,
@@ -1316,28 +1326,74 @@ async function startSessionHttpServer(options) {
     host,
     port,
     token: options.token,
-    url: `http://${host}:${port}`,
+    url: `http://${displayHost(host)}:${port}`,
     close: () => close(httpServer)
   };
+}
+
+// src/server/lan-addresses.ts
+import os2 from "node:os";
+function ipv4Octets(ip) {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  const octets = parts.map((part) => Number(part));
+  if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return null;
+  return octets;
+}
+function classifyLanAddress(name, ip) {
+  if (/tailscale/i.test(name)) return "tailscale";
+  const octets = ipv4Octets(ip);
+  if (!octets) return null;
+  const [first, second] = octets;
+  if (first === 100 && second >= 64 && second <= 127) return "tailscale";
+  if (first === 10) return "lan";
+  if (first === 192 && second === 168) return "lan";
+  return null;
+}
+function viewerLanAddresses(networkInterfaces = os2.networkInterfaces) {
+  const addresses = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const [name, infos] of Object.entries(networkInterfaces())) {
+    for (const info of infos ?? []) {
+      if (info.internal) continue;
+      const family = String(info.family);
+      if (family !== "IPv4" && family !== "4") continue;
+      const kind = classifyLanAddress(name, info.address);
+      if (!kind || seen.has(info.address)) continue;
+      seen.add(info.address);
+      addresses.push({ ip: info.address, kind });
+    }
+  }
+  return addresses;
 }
 
 // src/extension/server-controller.ts
 function defaultToken() {
   return randomBytes(32).toString("base64url");
 }
-function panelFromServer(server, cwd, serverCwd) {
+function panelFromServer(server, cwd, serverCwd, lanAddresses) {
   const hash = new URLSearchParams({ token: server.token });
   if (cwd && cwd !== serverCwd) hash.set("cwd", cwd);
+  const suffix = hash.toString();
+  const urls = [
+    { url: `${server.url}/#${suffix}`, kind: "local" },
+    ...lanAddresses.map((address) => ({
+      url: `http://${address.ip}:${server.port}/#${suffix}`,
+      kind: address.kind
+    }))
+  ];
   return {
     host: server.host,
     port: server.port,
     token: server.token,
-    url: `${server.url}/#${hash.toString()}`
+    url: urls[0].url,
+    urls
   };
 }
 function createServerController(options) {
   const startServer = options.startServer ?? startSessionHttpServer;
   const createToken = options.createToken ?? defaultToken;
+  const resolveLanAddresses = options.lanAddresses ?? viewerLanAddresses;
   let state = "stopped";
   let server;
   let panel;
@@ -1355,7 +1411,7 @@ function createServerController(options) {
   };
   const start = async (cwd) => {
     if (cwd) activeCwd = cwd;
-    if (panel && state === "running" && server) return panelFromServer(server, activeCwd, serverCwd);
+    if (panel && state === "running" && server) return panelFromServer(server, activeCwd, serverCwd, resolveLanAddresses());
     if (startPromise) return startPromise;
     if (stopPromise) await stopPromise;
     state = "starting";
@@ -1373,7 +1429,7 @@ function createServerController(options) {
         });
         server = started;
         serverCwd = serverCwdAtStart;
-        panel = panelFromServer(started, activeCwd, serverCwd);
+        panel = panelFromServer(started, activeCwd, serverCwd, resolveLanAddresses());
         state = "running";
         if (options.openBrowser) {
           try {
