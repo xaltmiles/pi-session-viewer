@@ -80,6 +80,11 @@ export const en = {
     warningsSummary: (count: number) => `${count} parse warning${count === 1 ? '' : 's'}`,
     emptyNoKinds: 'Select at least one event type.',
     emptyNoEvents: 'No events to display in current branch.',
+    searchLabel: 'Search in session',
+    searchPlaceholder: 'Search events (min 3 chars)',
+    searchClear: 'Clear search',
+    searchMatches: (count: number) => `${count} match${count === 1 ? '' : 'es'}`,
+    searchNoResults: 'No events match the search. Clear or extend the query.',
     turnEvents: (count: number) => `${count} event${count === 1 ? '' : 's'}`,
     llmOutputGroup: 'LLM output turn',
     kinds: {

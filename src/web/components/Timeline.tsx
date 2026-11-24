@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, Bot, Boxes, Brain, CheckCheck, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CircleUserRound, Cog, CornerDownRight, EyeOff, ScrollText, Square, Wrench, XCircle } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Bot, Boxes, Brain, CheckCheck, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CircleUserRound, Cog, CornerDownRight, EyeOff, ScrollText, Search, Square, Wrench, XCircle } from 'lucide-react'
 import { GroupedVirtuoso, type GroupedVirtuosoHandle, type GroupProps } from 'react-virtuoso'
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ComponentType } from 'react'
 import { buildCausalLayout, causalLaneX, type CausalEventLayout } from '../../core/causal-layout'
@@ -27,6 +27,10 @@ interface TimelineProps {
   selectedLeafId: string | null
   contextProjection?: ContextProjection
   enabledKinds: ReadonlySet<EventKind>
+  /** True while the trimmed search query reaches the minimum length. */
+  searchActive?: boolean
+  /** Match counts per event id while the search is active. */
+  searchMatchCounts?: ReadonlyMap<string, number>
   onSelectEvent: (event: TimelineEvent, showDetails?: boolean) => void
   onSelectBranch: (leafId: string) => void
   onToggleKind: (kind: EventKind) => void
@@ -96,7 +100,7 @@ function groupLlmOutputEvents(events: TimelineEvent[]): LlmOutputGroup[] {
   return groups
 }
 
-const EventRow = memo(function EventRow({ event, index, eventCount, turnId, selected, focused, causal, maxLanes, highlightedCallId, mutedCallIds, clockLabel, llmOutputBoundary, onSelectEvent, onFocusEvent, onOpenSubagent }: {
+const EventRow = memo(function EventRow({ event, index, eventCount, turnId, selected, focused, causal, maxLanes, highlightedCallId, mutedCallIds, clockLabel, llmOutputBoundary, searchHits, onSelectEvent, onFocusEvent, onOpenSubagent }: {
   event: TimelineEvent
   index: number
   eventCount: number
@@ -109,6 +113,8 @@ const EventRow = memo(function EventRow({ event, index, eventCount, turnId, sele
   mutedCallIds?: Set<string>
   clockLabel: string
   llmOutputBoundary?: LlmOutputBoundary
+  /** Match occurrences in this event's text while the search is active. */
+  searchHits?: number
   onSelectEvent: (event: TimelineEvent, showDetails?: boolean) => void
   onFocusEvent: (index: number) => void
   onOpenSubagent?: (subagent: SubagentReference, sourceEventId?: string) => void
@@ -258,6 +264,9 @@ const EventRow = memo(function EventRow({ event, index, eventCount, turnId, sele
           {charCount != null && event.kind !== 'system' && (
             <span className="event-char-count">{t.common.chars(charCount)}</span>
           )}
+          {searchHits != null && (
+            <span className="event-search-hits" title={t.timeline.searchMatches(searchHits)}>{searchHits}</span>
+          )}
           {event.contextExclusion && (
             <span
               className="event-context-mark"
@@ -299,6 +308,8 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
   selectedLeafId,
   contextProjection,
   enabledKinds,
+  searchActive,
+  searchMatchCounts,
   onSelectEvent,
   onSelectBranch,
   onToggleKind,
@@ -730,8 +741,12 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
 
       {turns.length === 0 ? (
         <div className="timeline-empty">
-          <Cog size={25} />
-          <p>{enabledKinds.size === 0 ? t.timeline.emptyNoKinds : t.timeline.emptyNoEvents}</p>
+          {searchActive ? <Search size={25} /> : <Cog size={25} />}
+          <p>{
+            enabledKinds.size === 0
+              ? t.timeline.emptyNoKinds
+              : searchActive ? t.timeline.searchNoResults : t.timeline.emptyNoEvents
+          }</p>
         </div>
       ) : (
         <GroupedVirtuoso
@@ -780,6 +795,7 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
                 mutedCallIds={mutedCallIds}
                 clockLabel={clockLabels.get(item.event.id) ?? ''}
                 llmOutputBoundary={item.llmOutputBoundary}
+                searchHits={searchActive ? searchMatchCounts?.get(item.event.id) : undefined}
                 onSelectEvent={stableSelectEvent}
                 onFocusEvent={onFocusEvent}
                 onOpenSubagent={stableOpenSubagent}

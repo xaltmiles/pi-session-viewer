@@ -381,6 +381,17 @@ h2 { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.2; }
 .filter-select-all:active {
   background: #d8e8ed;
 }
+
+/* Live search above the event list: one input, no submit button. */
+.timeline-search-bar { min-height: 38px; flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 4px 18px; border-bottom: 1px solid var(--line-soft); }
+.timeline-search-box { position: relative; min-width: 0; display: flex; align-items: center; }
+.timeline-search-icon { position: absolute; left: 9px; color: var(--muted); pointer-events: none; }
+.timeline-search-input { width: 260px; max-width: 100%; height: 28px; padding: 0 28px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: var(--paper); font-size: 12px; }
+.timeline-search-input::placeholder { color: #8a948f; }
+.timeline-search-clear { position: absolute; right: 5px; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; color: var(--muted); background: transparent; cursor: pointer; }
+.timeline-search-clear:hover { color: var(--ink); background: var(--line-soft); }
+.timeline-search-count { flex: 0 0 auto; color: var(--green); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.timeline-search-count.is-empty { color: var(--amber); }
 .warning-strip { flex: 0 0 auto; border-bottom: 1px solid #ead7b9; background: #fffaf0; color: #72501c; font-size: 12px; }
 .warning-strip summary { min-height: 28px; padding: 4px 18px; display: flex; align-items: center; gap: 7px; cursor: pointer; list-style: none; }
 .warning-strip summary svg:last-child { margin-left: auto; }
@@ -571,6 +582,20 @@ h2 { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.2; }
   background: transparent;
 }
 .event-summary { min-width: 0; display: -webkit-box; overflow: hidden; color: #65706c; font-size: 12px; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+/* Per-row search match badge, shown next to the char count while search is active. */
+.event-search-hits {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--amber-soft);
+  color: #7a5310;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .timeline-empty,
 .load-state { margin: auto; padding: 30px; display: grid; justify-items: center; color: var(--muted); text-align: center; }
 .timeline-empty p,
@@ -605,6 +630,8 @@ h2 { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.2; }
 .content-view { padding: 0; }
 .content-view > .content-body-wrap { padding: 0; }
 .content-view pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #26302d; font-family: 'IBM Plex Mono', monospace; font-size: 12px; line-height: 1.65; }
+/* Search hits inside plain-text content; never applied to markdown or tool-code. */
+mark.sv-search-hit { padding: 0 1px; border-radius: 2px; background: #f6dfae; color: #6d4a0e; box-shadow: inset 0 0 0 1px #e2c184; }
 
 /* Inspector overview sections */
 .inspector-overview { padding-bottom: 24px; }
@@ -1037,6 +1064,8 @@ h2 { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.2; }
   .sidebar-footer .import-button { min-height: 40px; }
   .filter-bar { min-height: 42px; }
   .filter-select-all { height: 32px; }
+  .timeline-search-bar { padding-inline: 12px; }
+  .timeline-search-input { flex: 1 1 auto; width: auto; min-width: 0; }
   .branch-bar { display: grid; grid-template-columns: auto minmax(0, 1fr); row-gap: 4px; column-gap: 12px; padding-block: 8px; }
   .branch-bar select { width: 100%; max-width: none; height: 34px; }
   .branch-bar > span { grid-column: 1 / -1; justify-self: end; margin: 0; }

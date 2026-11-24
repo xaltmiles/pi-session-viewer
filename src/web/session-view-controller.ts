@@ -79,6 +79,14 @@ export interface SessionCatalogState {
   warnings: string[]
 }
 
+/** Minimum trimmed query length before search filtering and highlighting engage. */
+export const MIN_SEARCH_QUERY_LENGTH = 3
+
+/** A query filters the timeline only once it reaches the minimum length after trimming. */
+export function isSearchQueryActive(query: string): boolean {
+  return query.trim().length >= MIN_SEARCH_QUERY_LENGTH
+}
+
 export interface SessionViewSnapshot<FileHandle = unknown> {
   active: ActiveSessionView<FileHandle> | null
   view: SessionView | null
@@ -86,6 +94,12 @@ export interface SessionViewSnapshot<FileHandle = unknown> {
   selectedLeafId: string | null
   selectedEventId: string | null
   enabledKinds: ReadonlySet<EventKind>
+  /** Raw search input; filtering engages once the trimmed value reaches `MIN_SEARCH_QUERY_LENGTH`. */
+  searchQuery: string
+  /** Matches per event id (occurrence counts); empty while the search is inactive. */
+  searchMatchCounts: ReadonlyMap<string, number>
+  /** Number of visible events with at least one match; 0 while the search is inactive. */
+  searchHitCount: number
   loading: boolean
   loadError: SessionViewError | null
   actionError: SessionViewError | null
@@ -116,6 +130,7 @@ export type SessionViewIntent<FileHandle = unknown> =
   | { type: 'toggle-event-kind'; kind: EventKind }
   | { type: 'toggle-all-event-kinds' }
   | { type: 'ensure-event-kind'; kind: EventKind }
+  | { type: 'set-search-query'; query: string }
   | { type: 'acknowledge-timeline-restore'; key: number }
   | { type: 'dismiss-action-error' }
   | { type: 'dismiss-load-error' }
@@ -256,10 +271,38 @@ function computeFullJsonlPath<FileHandle>(
   return `${cleanRoot}/${cleanRel}`
 }
 
+function countOccurrences(haystack: string, needle: string): number {
+  if (!needle) return 0
+  let count = 0
+  let cursor = 0
+  for (;;) {
+    const hit = haystack.indexOf(needle, cursor)
+    if (hit < 0) return count
+    count += 1
+    cursor = hit + needle.length
+  }
+}
+
+/**
+ * Lowercased searchable text per event: the content the entry's content view
+ * renders, plus the tool name for call/result rows. Cached per event object so
+ * typing stays fast on large sessions — events keep their identity while the
+ * user edits the query, so the index is built once per loaded view.
+ */
+const eventSearchTextCache = new WeakMap<TimelineEvent, string>()
+function eventSearchText(event: TimelineEvent): string {
+  let text = eventSearchTextCache.get(event)
+  if (text === undefined) {
+    text = `${event.content ?? ''}${event.toolName ? `\n${event.toolName}` : ''}`.toLowerCase()
+    eventSearchTextCache.set(event, text)
+  }
+  return text
+}
+
 function deriveSnapshot<FileHandle>(
   base: Omit<
     SessionViewSnapshot<FileHandle>,
-    'visibleTurns' | 'selectedEvent' | 'previousPrompt' | 'sessionTitle' | 'fullJsonlPath'
+    'visibleTurns' | 'selectedEvent' | 'previousPrompt' | 'sessionTitle' | 'fullJsonlPath' | 'searchMatchCounts' | 'searchHitCount'
   >,
 ): SessionViewSnapshot<FileHandle> {
   const selectedEvent = base.view && base.selectedEventId
@@ -268,9 +311,24 @@ function deriveSnapshot<FileHandle>(
   const previousPrompt = base.view && selectedEvent?.kind === 'system-prompt'
     ? findPreviousPromptSnapshot(base.view.events, selectedEvent.id)
     : undefined
+  const trimmedQuery = base.searchQuery.trim()
+  const needle = isSearchQueryActive(base.searchQuery) ? trimmedQuery.toLowerCase() : null
+  const searchMatchCounts = new Map<string, number>()
+  let searchHitCount = 0
+  const matchesQuery = (event: TimelineEvent): boolean => {
+    if (!needle) return true
+    const count = countOccurrences(eventSearchText(event), needle)
+    if (count === 0) return false
+    searchMatchCounts.set(event.id, count)
+    searchHitCount += 1
+    return true
+  }
   const visibleTurns: TimelineTurn[] = base.view
     ? base.view.turns
-        .map((turn) => ({ ...turn, events: turn.events.filter((event) => base.enabledKinds.has(event.kind)) }))
+        .map((turn) => ({
+          ...turn,
+          events: turn.events.filter((event) => base.enabledKinds.has(event.kind) && matchesQuery(event)),
+        }))
         .filter((turn) => turn.events.length > 0)
     : []
   const sessionTitle = base.active ? getSessionTitle(base.active.parsed) : null
@@ -283,6 +341,8 @@ function deriveSnapshot<FileHandle>(
     previousPrompt,
     sessionTitle,
     fullJsonlPath,
+    searchMatchCounts,
+    searchHitCount,
   }
 }
 
@@ -297,6 +357,7 @@ export function createSessionViewController<FileHandle = unknown>(
     selectedLeafId: null,
     selectedEventId: null,
     enabledKinds: new Set(defaultEventKinds),
+    searchQuery: '',
     loading: false,
     loadError: null,
     actionError: null,
@@ -322,7 +383,7 @@ export function createSessionViewController<FileHandle = unknown>(
   const publish = (
     next: Omit<
       SessionViewSnapshot<FileHandle>,
-      'visibleTurns' | 'selectedEvent' | 'previousPrompt' | 'sessionTitle' | 'fullJsonlPath'
+      'visibleTurns' | 'selectedEvent' | 'previousPrompt' | 'sessionTitle' | 'fullJsonlPath' | 'searchMatchCounts' | 'searchHitCount'
     >,
   ) => {
     snapshot = deriveSnapshot(next)
@@ -812,6 +873,9 @@ export function createSessionViewController<FileHandle = unknown>(
         update({ enabledKinds })
         return
       }
+      case 'set-search-query':
+        update({ searchQuery: intent.query })
+        return
       case 'acknowledge-timeline-restore':
         if (snapshot.restoreIntent?.key === intent.key) update({ restoreIntent: null })
         return

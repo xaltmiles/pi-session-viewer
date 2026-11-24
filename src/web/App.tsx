@@ -1,4 +1,4 @@
-import { AlertCircle, ArrowLeft, Bot, Clock3, Copy, FolderOpen, Menu, PanelRightOpen, RefreshCw, Rows3, X } from 'lucide-react'
+import { AlertCircle, ArrowLeft, Bot, Clock3, Copy, FolderOpen, Menu, PanelRightOpen, RefreshCw, Rows3, Search, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { fetchSession, fetchSessions, resolveSession } from './api'
 import { Inspector } from './components/Inspector'
@@ -9,7 +9,7 @@ import { parseSessionJsonl } from '../core/session-parser'
 import { buildSessionView } from '../core/session-view'
 import { browserAccessToken, browserInitialCwd } from './session-auth'
 import { sessionCache } from './session-cache'
-import { createSessionViewController } from './session-view-controller'
+import { createSessionViewController, isSearchQueryActive } from './session-view-controller'
 import { useCopyFeedback } from './use-copy-feedback'
 import type {
   EventKind,
@@ -201,6 +201,9 @@ function App() {
   const previousPrompt = sessionState.previousPrompt
   const visibleTurns = sessionState.visibleTurns
   const fullJsonlPath = sessionState.fullJsonlPath
+  const searchQuery = sessionState.searchQuery
+  const searchActive = isSearchQueryActive(searchQuery)
+  const searchHitCount = sessionState.searchHitCount
 
   const selectBranch = useCallback((leafId: string) => {
     void controller.dispatch({ type: 'select-branch', leafId })
@@ -213,6 +216,9 @@ function App() {
   }, [controller])
   const ensureEventKindEnabled = useCallback((kind: EventKind) => {
     void controller.dispatch({ type: 'ensure-event-kind', kind })
+  }, [controller])
+  const setSearchQuery = useCallback((query: string) => {
+    void controller.dispatch({ type: 'set-search-query', query })
   }, [controller])
   const acknowledgeRestorePosition = useCallback((key: number) => {
     void controller.dispatch({ type: 'acknowledge-timeline-restore', key })
@@ -423,6 +429,46 @@ function App() {
                 <div><span>{t.overview.duration}</span><strong>{formatDuration(view.stats.elapsedMs)}</strong></div>
                 <div><span>{t.overview.started}</span><strong>{formatDateTime(view.stats.startedAt)}</strong></div>
               </section>
+              <div className="timeline-search-bar">
+                <div className="timeline-search-box">
+                  <Search size={14} className="timeline-search-icon" aria-hidden="true" />
+                  <input
+                    className="timeline-search-input"
+                    type="text"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape' && searchQuery) {
+                        event.preventDefault()
+                        setSearchQuery('')
+                      }
+                    }}
+                    placeholder={t.timeline.searchPlaceholder}
+                    aria-label={t.timeline.searchLabel}
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                  {searchQuery.trim() !== '' && (
+                    <button
+                      type="button"
+                      className="timeline-search-clear"
+                      onClick={() => setSearchQuery('')}
+                      title={t.timeline.searchClear}
+                      aria-label={t.timeline.searchClear}
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+                {searchActive && (
+                  <span
+                    className={`timeline-search-count${searchHitCount === 0 ? ' is-empty' : ''}`}
+                    role="status"
+                  >
+                    {t.timeline.searchMatches(searchHitCount)}
+                  </span>
+                )}
+              </div>
               <Timeline
                 ref={timelineRef}
                 session={parsedSession}
@@ -433,6 +479,8 @@ function App() {
                 selectedLeafId={selectedLeafId}
                 contextProjection={activeContextProjection}
                 enabledKinds={enabledKinds}
+                searchActive={searchActive}
+                searchMatchCounts={sessionState.searchMatchCounts}
                 onSelectEvent={selectEvent}
                 onSelectBranch={selectBranch}
                 onToggleKind={toggleEventKind}
@@ -454,6 +502,7 @@ function App() {
         <Inspector
           event={selectedEvent}
           previousPrompt={previousPrompt}
+          searchQuery={searchQuery}
           mobileOpen={inspectorOpen}
           compactScreen={compactScreen}
           onClose={() => setInspectorOpen(false)}

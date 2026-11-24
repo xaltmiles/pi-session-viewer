@@ -607,3 +607,104 @@ describe('Session View controller', () => {
     expect(controller.getSnapshot().active?.token).toBe('s1')
   })
 })
+
+describe('Session search filter', () => {
+  function searchableContent(): string {
+    const entries: unknown[] = [
+      JSON.parse(HEADER),
+      { type: 'message', id: 'user-1', parentId: null, timestamp: '2026-01-01T00:00:01.000Z', message: { role: 'user', timestamp: 1, content: 'Please deploy the docs site' } },
+      {
+        type: 'message',
+        id: 'assistant-1',
+        parentId: 'user-1',
+        timestamp: '2026-01-01T00:00:02.000Z',
+        message: {
+          role: 'assistant',
+          timestamp: 2,
+          content: [
+            { type: 'text', text: 'Deploying now, standby for confirmation.' },
+            { type: 'toolCall', id: 'call-1', name: 'run-command', arguments: { command: 'make deploy-production' } },
+          ],
+        },
+      },
+      { type: 'message', id: 'result-1', parentId: 'assistant-1', timestamp: '2026-01-01T00:00:03.000Z', message: { role: 'toolResult', timestamp: 3, content: 'deploy-production finished in 42s', toolCallId: 'call-1', toolName: 'run-command', isError: false } },
+      { type: 'message', id: 'assistant-2', parentId: 'result-1', timestamp: '2026-01-01T00:00:04.000Z', message: { role: 'assistant', timestamp: 4, content: [{ type: 'text', text: 'All done, reports archived.' }] } },
+    ]
+    return entries.map((entry) => JSON.stringify(entry)).join('\n')
+  }
+
+  async function openSearchSession(): Promise<SessionViewController<unknown>> {
+    const controller = createController(async (token) => payload(token, searchableContent()))
+    await controller.dispatch({ type: 'open', session: session('alpha') })
+    return controller
+  }
+
+  const visibleEventIds = (controller: SessionViewController<unknown>): string[] =>
+    controller.getSnapshot().visibleTurns.flatMap((turn) => turn.events.map((event) => event.id))
+
+  it('activates filtering at exactly three characters and stays inactive below', async () => {
+    const controller = await openSearchSession()
+    const baseline = visibleEventIds(controller)
+    expect(baseline.length).toBeGreaterThan(0)
+
+    await controller.dispatch({ type: 'set-search-query', query: 'xy' })
+    expect(visibleEventIds(controller)).toEqual(baseline)
+    expect(controller.getSnapshot().searchHitCount).toBe(0)
+    expect(controller.getSnapshot().searchMatchCounts.size).toBe(0)
+
+    await controller.dispatch({ type: 'set-search-query', query: 'xyz' })
+    expect(visibleEventIds(controller)).toEqual([])
+    expect(controller.getSnapshot().searchHitCount).toBe(0)
+
+    await controller.dispatch({ type: 'set-search-query', query: '  xyz  ' })
+    expect(visibleEventIds(controller)).toEqual([])
+
+    await controller.dispatch({ type: 'set-search-query', query: ' xy ' })
+    expect(visibleEventIds(controller)).toEqual(baseline)
+  })
+
+  it('matches case-insensitively across user, assistant, and tool text in original order', async () => {
+    const controller = await openSearchSession()
+
+    await controller.dispatch({ type: 'set-search-query', query: 'DEPLOY' })
+    expect(visibleEventIds(controller)).toEqual([
+      'user-1:user',
+      'assistant-1:assistant:0',
+      'assistant-1:tool:1',
+      'result-1:result',
+    ])
+    expect(controller.getSnapshot().searchHitCount).toBe(4)
+
+    await controller.dispatch({ type: 'set-search-query', query: 'PROD' })
+    expect(visibleEventIds(controller)).toEqual(['assistant-1:tool:1', 'result-1:result'])
+    expect(controller.getSnapshot().searchHitCount).toBe(2)
+  })
+
+  it('exposes per-event match counts and restores the full list when cleared', async () => {
+    const controller = await openSearchSession()
+    const baseline = visibleEventIds(controller)
+
+    await controller.dispatch({ type: 'set-search-query', query: 'deploy' })
+    const counts = controller.getSnapshot().searchMatchCounts
+    expect(counts.get('user-1:user')).toBe(1)
+    expect(counts.get('assistant-1:assistant:0')).toBe(1)
+    expect(counts.get('assistant-1:tool:1')).toBe(1)
+    expect(counts.get('result-1:result')).toBe(1)
+    expect(counts.has('assistant-2:assistant:0')).toBe(false)
+
+    await controller.dispatch({ type: 'set-search-query', query: '' })
+    expect(visibleEventIds(controller)).toEqual(baseline)
+    expect(controller.getSnapshot().searchHitCount).toBe(0)
+    expect(controller.getSnapshot().searchMatchCounts.size).toBe(0)
+  })
+
+  it('keeps the selected event inspectable while it is filtered out of the timeline', async () => {
+    const controller = await openSearchSession()
+    await controller.dispatch({ type: 'select-event', eventId: 'user-1:user' })
+
+    await controller.dispatch({ type: 'set-search-query', query: 'archived' })
+
+    expect(visibleEventIds(controller)).toEqual(['assistant-2:assistant:0'])
+    expect(controller.getSnapshot().selectedEvent?.id).toBe('user-1:user')
+  })
+})

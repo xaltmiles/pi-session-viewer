@@ -11,11 +11,12 @@ import {
   LocateFixed,
   X,
 } from 'lucide-react'
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { formatClock, formatDateTime, formatDuration } from '../../core/format'
 import type { CapturedToolDefinition, SystemPromptComposition, TimelineEvent } from '../../core/types'
 import { parseSystemPromptSections } from '../../core/prompt-sections'
 import { getToolProvenanceLabel, resolveToolProvenance, sanitizeToolForApi } from '../../core/tool-provenance'
+import { MIN_SEARCH_QUERY_LENGTH } from '../session-view-controller'
 import { PromptDiffView } from './PromptDiffView'
 import { useI18n } from '../i18n'
 import { useCopyFeedback } from '../use-copy-feedback'
@@ -23,6 +24,8 @@ import { useCopyFeedback } from '../use-copy-feedback'
 interface InspectorProps {
   event: TimelineEvent | null
   previousPrompt?: string
+  /** Current search query; plain-text views highlight matches once it is long enough. */
+  searchQuery?: string
   mobileOpen: boolean
   compactScreen: boolean
   onClose: () => void
@@ -254,7 +257,34 @@ function EventOverview({ event }: { event: TimelineEvent }) {
   )
 }
 
-function EventContentView({ event, onJumpToEntry }: { event: TimelineEvent; onJumpToEntry?: (entryId: string) => void }) {
+function searchHighlightRegex(query: string): RegExp | null {
+  const trimmed = query.trim()
+  if (trimmed.length < MIN_SEARCH_QUERY_LENGTH) return null
+  return new RegExp(trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+}
+
+/**
+ * Splits plain text around case-insensitive matches, wrapping each one in
+ * `<mark class="sv-search-hit">`. Produces React nodes only — never HTML —
+ * so this stays confined to plain-text rendering paths (no markdown / tool-code).
+ */
+function highlightPlainText(text: string, query: string | undefined): ReactNode {
+  const regex = query ? searchHighlightRegex(query) : null
+  if (!regex || !text) return text
+  const nodes: ReactNode[] = []
+  let cursor = 0
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > cursor) nodes.push(text.slice(cursor, match.index))
+    nodes.push(<mark className="sv-search-hit" key={nodes.length}>{match[0]}</mark>)
+    cursor = match.index + match[0].length
+  }
+  if (cursor === 0) return text
+  if (cursor < text.length) nodes.push(text.slice(cursor))
+  return nodes
+}
+
+function EventContentView({ event, searchQuery, onJumpToEntry }: { event: TimelineEvent; searchQuery?: string; onJumpToEntry?: (entryId: string) => void }) {
   const { t } = useI18n()
   const content = event.content ?? ''
   const totalChars = content.length
@@ -286,13 +316,13 @@ function EventContentView({ event, onJumpToEntry }: { event: TimelineEvent; onJu
       <div
         className={`content-body-wrap event--${event.kind}${event.isError ? ' is-error' : ''}`}
       >
-        <pre>{content || t.inspector.views.noContent}</pre>
+        <pre>{content ? highlightPlainText(content, searchQuery) : t.inspector.views.noContent}</pre>
       </div>
     </div>
   )
 }
 
-function EventRawView({ event }: { event: TimelineEvent }) {
+function EventRawView({ event, searchQuery }: { event: TimelineEvent; searchQuery?: string }) {
   const { t } = useI18n()
   const rawText = JSON.stringify(event.raw, null, 2)
 
@@ -308,13 +338,13 @@ function EventRawView({ event }: { event: TimelineEvent }) {
       <div
         className={`content-body-wrap event--${event.kind}${event.isError ? ' is-error' : ''}`}
       >
-        <pre>{rawText || t.inspector.views.noRaw}</pre>
+        <pre>{rawText ? highlightPlainText(rawText, searchQuery) : t.inspector.views.noRaw}</pre>
       </div>
     </div>
   )
 }
 
-export function Inspector({ event, previousPrompt, mobileOpen, compactScreen, onClose, onJumpToEvent, onJumpToEntry }: InspectorProps) {
+export function Inspector({ event, previousPrompt, searchQuery, mobileOpen, compactScreen, onClose, onJumpToEvent, onJumpToEntry }: InspectorProps) {
   const { t, localizeTitle } = useI18n()
   const [tab, setTab] = useState<InspectorTab>('content')
   const tabListRef = useRef<HTMLDivElement>(null)
@@ -420,11 +450,11 @@ export function Inspector({ event, previousPrompt, mobileOpen, compactScreen, on
             ) : tab === 'diff' && event ? (
               <PromptDiffView key={event.id} event={event} previousPrompt={previousPrompt} />
             ) : tab === 'raw' ? (
-              <EventRawView event={event} />
+              <EventRawView event={event} searchQuery={searchQuery} />
             ) : isToolDef ? (
               <ToolDefinitionsView tools={tools} />
             ) : (
-              <EventContentView event={event} onJumpToEntry={onJumpToEntry} />
+              <EventContentView event={event} searchQuery={searchQuery} onJumpToEntry={onJumpToEntry} />
             )}
           </div>
         </>
