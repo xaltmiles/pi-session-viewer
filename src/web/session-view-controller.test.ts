@@ -4,7 +4,7 @@ import { parseSessionJsonl } from '../core/session-parser'
 import { decodeSessionToken, encodeSessionToken } from '../core/session-token'
 import type { SessionFileResponse, SessionListItem, SessionListResponse } from '../core/types'
 import { createSessionCache, sessionCacheKey } from './session-cache'
-import { createSessionViewController, type SessionViewController } from './session-view-controller'
+import { createSessionViewController, searchHitSpans, type SessionViewController } from './session-view-controller'
 
 const HEADER = JSON.stringify({
   type: 'session',
@@ -627,7 +627,7 @@ describe('Session search filter', () => {
           ],
         },
       },
-      { type: 'message', id: 'result-1', parentId: 'assistant-1', timestamp: '2026-01-01T00:00:03.000Z', message: { role: 'toolResult', timestamp: 3, content: 'deploy-production finished in 42s', toolCallId: 'call-1', toolName: 'run-command', isError: false } },
+      { type: 'message', id: 'result-1', parentId: 'assistant-1', timestamp: '2026-01-01T00:00:03.000Z', message: { role: 'toolResult', timestamp: 3, content: 'deploy-production finished; redeploy queued.', toolCallId: 'call-1', toolName: 'run-command', isError: false } },
       { type: 'message', id: 'assistant-2', parentId: 'result-1', timestamp: '2026-01-01T00:00:04.000Z', message: { role: 'assistant', timestamp: 4, content: [{ type: 'text', text: 'All done, reports archived.' }] } },
     ]
     return entries.map((entry) => JSON.stringify(entry)).join('\n')
@@ -689,12 +689,23 @@ describe('Session search filter', () => {
     expect(counts.get('user-1:user')).toBe(1)
     expect(counts.get('assistant-1:assistant:0')).toBe(1)
     expect(counts.get('assistant-1:tool:1')).toBe(1)
-    expect(counts.get('result-1:result')).toBe(1)
+    // Multiple occurrences inside one event count individually ('deploy-production', 'redeploy').
+    expect(counts.get('result-1:result')).toBe(2)
     expect(counts.has('assistant-2:assistant:0')).toBe(false)
 
     await controller.dispatch({ type: 'set-search-query', query: '' })
     expect(visibleEventIds(controller)).toEqual(baseline)
     expect(controller.getSnapshot().searchHitCount).toBe(0)
+    expect(controller.getSnapshot().searchMatchCounts.size).toBe(0)
+  })
+
+  it('keeps tool-name-only matches visible without counting them as highlightable hits', async () => {
+    const controller = await openSearchSession()
+
+    // 'run-command' appears only in the tool names, never in rendered content.
+    await controller.dispatch({ type: 'set-search-query', query: 'run-command' })
+    expect(visibleEventIds(controller)).toEqual(['assistant-1:tool:1', 'result-1:result'])
+    expect(controller.getSnapshot().searchHitCount).toBe(2)
     expect(controller.getSnapshot().searchMatchCounts.size).toBe(0)
   })
 
@@ -706,5 +717,27 @@ describe('Session search filter', () => {
 
     expect(visibleEventIds(controller)).toEqual(['assistant-2:assistant:0'])
     expect(controller.getSnapshot().selectedEvent?.id).toBe('user-1:user')
+  })
+})
+
+describe('Search highlighting spans', () => {
+  it('locates regex-special queries without building a RegExp from user input', () => {
+    expect(searchHitSpans('use C++ then C++ again', 'C++')).toEqual([
+      { start: 4, end: 7 },
+      { start: 13, end: 16 },
+    ])
+    expect(searchHitSpans('call a)b tool', 'a)b')).toEqual([{ start: 5, end: 8 }])
+  })
+
+  it('covers whole-string matches and stays inactive below the minimum length', () => {
+    expect(searchHitSpans('deploy', 'DEPLOY')).toEqual([{ start: 0, end: 6 }])
+    expect(searchHitSpans('anything', 'ab')).toBe(null)
+    expect(searchHitSpans('', 'anything')).toBe(null)
+  })
+
+  it('resolves spans inside raw-view JSON text', () => {
+    const raw = JSON.stringify({ type: 'message', detail: 'C++ analyser ran a)b check' }, null, 2)
+    const at = raw.indexOf('a)b')
+    expect(searchHitSpans(raw, 'a)b')).toEqual([{ start: at, end: at + 3 }])
   })
 })

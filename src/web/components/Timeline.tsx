@@ -5,6 +5,7 @@ import { buildCausalLayout, causalLaneX, type CausalEventLayout } from '../../co
 import { allEventKinds } from '../../core/event-kinds'
 import { formatClock, formatDuration } from '../../core/format'
 import type { ContextProjection, EventKind, ParsedSession, SubagentReference, TimelineEvent, TimelineTurn } from '../../core/types'
+import { eventMatchesSearchQuery } from '../session-view-controller'
 import { useI18n } from '../i18n'
 
 const kindMeta: Record<EventKind, { icon: ComponentType<{ size?: number; className?: string }>; color: string }> = {
@@ -29,8 +30,12 @@ interface TimelineProps {
   enabledKinds: ReadonlySet<EventKind>
   /** True while the trimmed search query reaches the minimum length. */
   searchActive?: boolean
+  /** Raw search query, used to decide whether a restore target is masked by the filter. */
+  searchQuery?: string
   /** Match counts per event id while the search is active. */
   searchMatchCounts?: ReadonlyMap<string, number>
+  /** Clears the live search, used to reveal a restore target hidden by it. */
+  onClearSearch?: () => void
   onSelectEvent: (event: TimelineEvent, showDetails?: boolean) => void
   onSelectBranch: (leafId: string) => void
   onToggleKind: (kind: EventKind) => void
@@ -265,7 +270,7 @@ const EventRow = memo(function EventRow({ event, index, eventCount, turnId, sele
             <span className="event-char-count">{t.common.chars(charCount)}</span>
           )}
           {searchHits != null && (
-            <span className="event-search-hits" title={t.timeline.searchMatches(searchHits)}>{searchHits}</span>
+            <span className="event-search-hits" title={t.timeline.searchHits(searchHits)}>{searchHits}</span>
           )}
           {event.contextExclusion && (
             <span
@@ -309,7 +314,9 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
   contextProjection,
   enabledKinds,
   searchActive,
+  searchQuery,
   searchMatchCounts,
+  onClearSearch,
   onSelectEvent,
   onSelectBranch,
   onToggleKind,
@@ -585,9 +592,16 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
     const target = targetEventId
       ? allEvents.find((event) => event.id === targetEventId)
       : undefined
+    const maskedBySearch = (event: TimelineEvent) =>
+      searchActive && !eventMatchesSearchQuery(event, searchQuery ?? '')
     if (target && !enabledKinds.has(target.kind)) {
       if (restorePosition.revealEventKind) {
         onEnsureEventKindEnabled(target.kind)
+        if (maskedBySearch(target)) {
+          // The jumped event is hidden by the live search: clear it and let this
+          // effect rerun once the row is visible.
+          onClearSearch?.()
+        }
         return
       }
       anchor = undefined
@@ -595,6 +609,12 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
     }
 
     const index = targetEventId ? eventIndexById.get(targetEventId) : undefined
+    if (index == null && target && maskedBySearch(target)) {
+      // A restore target (branch switch, refresh, session change) the live
+      // search keeps out of the list: clear the query, then scroll on rerun.
+      onClearSearch?.()
+      return
+    }
     if (restorePosition.scrollTop == null && index == null) {
       const acknowledgement = requestAnimationFrame(() => onRestorePositionApplied(restorePosition.key))
       return () => cancelAnimationFrame(acknowledgement)
@@ -675,7 +695,7 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(function Timel
         restoreFrameRef.current = null
       }
     }
-  }, [allEvents, correctAnchorOffset, enabledKinds, eventIndexById, onEnsureEventKindEnabled, onRestorePositionApplied, restorePosition])
+  }, [allEvents, correctAnchorOffset, enabledKinds, eventIndexById, onClearSearch, onEnsureEventKindEnabled, onRestorePositionApplied, restorePosition, searchActive, searchQuery])
 
   return (
     <section className="timeline-panel" aria-label={t.timeline.ariaLabel}>

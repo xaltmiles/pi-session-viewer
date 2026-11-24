@@ -1,3 +1,5 @@
+import { MIN_SEARCH_QUERY_LENGTH } from '../session-view-controller'
+
 export const en = {
   common: {
     productName: 'Pi Session Viewer',
@@ -81,9 +83,10 @@ export const en = {
     emptyNoKinds: 'Select at least one event type.',
     emptyNoEvents: 'No events to display in current branch.',
     searchLabel: 'Search in session',
-    searchPlaceholder: 'Search events (min 3 chars)',
+    searchPlaceholder: `Search events (min ${MIN_SEARCH_QUERY_LENGTH} chars)`,
     searchClear: 'Clear search',
-    searchMatches: (count: number) => `${count} match${count === 1 ? '' : 'es'}`,
+    searchEventsMatch: (count: number) => `${count} event${count === 1 ? '' : 's'} match${count === 1 ? 'es' : ''}`,
+    searchHits: (count: number) => `${count} hit${count === 1 ? '' : 's'}`,
     searchNoResults: 'No events match the search. Clear or extend the query.',
     turnEvents: (count: number) => `${count} event${count === 1 ? '' : 's'}`,
     llmOutputGroup: 'LLM output turn',

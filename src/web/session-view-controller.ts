@@ -271,32 +271,78 @@ function computeFullJsonlPath<FileHandle>(
   return `${cleanRoot}/${cleanRel}`
 }
 
-function countOccurrences(haystack: string, needle: string): number {
-  if (!needle) return 0
-  let count = 0
+/**
+ * Offsets of every case-insensitive occurrence of `needle` inside an already
+ * lowercased haystack. The single matching primitive shared by timeline
+ * counting and view highlighting, so the two can never disagree.
+ */
+export interface SearchMatchSpan {
+  start: number
+  end: number
+}
+
+export function searchMatchSpans(lowerHaystack: string, needle: string): SearchMatchSpan[] {
+  const spans: SearchMatchSpan[] = []
+  if (!needle) return spans
   let cursor = 0
   for (;;) {
-    const hit = haystack.indexOf(needle, cursor)
-    if (hit < 0) return count
-    count += 1
+    const hit = lowerHaystack.indexOf(needle, cursor)
+    if (hit < 0) return spans
+    spans.push({ start: hit, end: hit + needle.length })
     cursor = hit + needle.length
   }
+}
+
+/** The normalized active needle, or null while the query is too short to search. */
+function searchNeedle(query: string): string | null {
+  const trimmed = query.trim()
+  return trimmed.length >= MIN_SEARCH_QUERY_LENGTH ? trimmed.toLowerCase() : null
 }
 
 /**
  * Lowercased searchable text per event: the content the entry's content view
  * renders, plus the tool name for call/result rows. Cached per event object so
  * typing stays fast on large sessions — events keep their identity while the
- * user edits the query, so the index is built once per loaded view.
+ * user edits the query, so the index is built once per loaded view. `content`
+ * alone backs counts and highlights; `full` also lets a tool name match pull
+ * its row into the timeline.
  */
-const eventSearchTextCache = new WeakMap<TimelineEvent, string>()
-function eventSearchText(event: TimelineEvent): string {
-  let text = eventSearchTextCache.get(event)
-  if (text === undefined) {
-    text = `${event.content ?? ''}${event.toolName ? `\n${event.toolName}` : ''}`.toLowerCase()
-    eventSearchTextCache.set(event, text)
+interface EventSearchIndex {
+  content: string
+  full: string
+}
+const eventSearchIndexCache = new WeakMap<TimelineEvent, EventSearchIndex>()
+function eventSearchIndex(event: TimelineEvent): EventSearchIndex {
+  let index = eventSearchIndexCache.get(event)
+  if (index === undefined) {
+    const content = (event.content ?? '').toLowerCase()
+    index = {
+      content,
+      full: event.toolName ? `${content}\n${event.toolName.toLowerCase()}` : content,
+    }
+    eventSearchIndexCache.set(event, index)
   }
-  return text
+  return index
+}
+
+/** Whether one event's searchable text (rendered content plus tool name) matches the query. */
+export function eventMatchesSearchQuery(event: TimelineEvent, query: string): boolean {
+  const needle = searchNeedle(query)
+  if (!needle) return true
+  const index = eventSearchIndex(event)
+  return searchMatchSpans(index.full, needle).length > 0
+}
+
+/**
+ * Match spans for view highlighting: null while the query is inactive (shorter
+ * than `MIN_SEARCH_QUERY_LENGTH` after trimming), otherwise every
+ * case-insensitive occurrence in `text`. Uses the exact same lowercased-indexOf
+ * loop as the timeline count, so highlights and counts agree structurally.
+ */
+export function searchHitSpans(text: string, query: string | undefined): SearchMatchSpan[] | null {
+  const needle = searchNeedle(query ?? '')
+  if (!needle || !text) return null
+  return searchMatchSpans(text.toLowerCase(), needle)
 }
 
 function deriveSnapshot<FileHandle>(
@@ -311,15 +357,17 @@ function deriveSnapshot<FileHandle>(
   const previousPrompt = base.view && selectedEvent?.kind === 'system-prompt'
     ? findPreviousPromptSnapshot(base.view.events, selectedEvent.id)
     : undefined
-  const trimmedQuery = base.searchQuery.trim()
-  const needle = isSearchQueryActive(base.searchQuery) ? trimmedQuery.toLowerCase() : null
+  const needle = searchNeedle(base.searchQuery)
   const searchMatchCounts = new Map<string, number>()
   let searchHitCount = 0
   const matchesQuery = (event: TimelineEvent): boolean => {
     if (!needle) return true
-    const count = countOccurrences(eventSearchText(event), needle)
-    if (count === 0) return false
-    searchMatchCounts.set(event.id, count)
+    const index = eventSearchIndex(event)
+    if (searchMatchSpans(index.full, needle).length === 0) return false
+    // Counts (and Content-view highlights) cover rendered text only, so a hit
+    // that exists solely in the tool name shows the row without a count badge.
+    const contentHits = searchMatchSpans(index.content, needle).length
+    if (contentHits > 0) searchMatchCounts.set(event.id, contentHits)
     searchHitCount += 1
     return true
   }

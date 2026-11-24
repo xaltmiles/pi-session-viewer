@@ -1,4 +1,5 @@
 import type { Translations } from './en'
+import { MIN_SEARCH_QUERY_LENGTH } from '../session-view-controller'
 
 export const zhCN: Translations = {
   common: {
@@ -83,9 +84,10 @@ export const zhCN: Translations = {
     emptyNoKinds: '至少选择一种事件类型。',
     emptyNoEvents: '当前分支没有可显示的事件。',
     searchLabel: '会话内搜索',
-    searchPlaceholder: '搜索事件（至少 3 个字符）',
+    searchPlaceholder: `搜索事件（至少 ${MIN_SEARCH_QUERY_LENGTH} 个字符）`,
     searchClear: '清除搜索',
-    searchMatches: (count: number) => `${count} 个匹配`,
+    searchEventsMatch: (count: number) => `${count} 个事件匹配`,
+    searchHits: (count: number) => `${count} 处命中`,
     searchNoResults: '没有符合搜索条件的事件，请清除或扩展搜索词。',
     turnEvents: (count: number) => `${count} 个事件`,
     llmOutputGroup: '一轮回复输出',

@@ -27,7 +27,7 @@ user types, and highlight matches in the Details pane.
 - Only active when the query is ≥ 3 chars.
 - Plain-text content only: split strings and wrap text nodes — never inject
   HTML into markdown / tool-code rendering paths.
-- `styles.css`: highlight style consistent with the existing dark theme.
+- `styles.css`: highlight style consistent with the existing light theme.
 
 ## Implementation constraints
 - State lives in `src/web/session-view-controller.ts` (`searchQuery` +

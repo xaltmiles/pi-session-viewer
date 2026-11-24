@@ -220,6 +220,9 @@ function App() {
   const setSearchQuery = useCallback((query: string) => {
     void controller.dispatch({ type: 'set-search-query', query })
   }, [controller])
+  const clearSearch = useCallback(() => {
+    void controller.dispatch({ type: 'set-search-query', query: '' })
+  }, [controller])
   const acknowledgeRestorePosition = useCallback((key: number) => {
     void controller.dispatch({ type: 'acknowledge-timeline-restore', key })
   }, [controller])
@@ -465,7 +468,7 @@ function App() {
                     className={`timeline-search-count${searchHitCount === 0 ? ' is-empty' : ''}`}
                     role="status"
                   >
-                    {t.timeline.searchMatches(searchHitCount)}
+                    {t.timeline.searchEventsMatch(searchHitCount)}
                   </span>
                 )}
               </div>
@@ -480,7 +483,9 @@ function App() {
                 contextProjection={activeContextProjection}
                 enabledKinds={enabledKinds}
                 searchActive={searchActive}
+                searchQuery={searchQuery}
                 searchMatchCounts={sessionState.searchMatchCounts}
+                onClearSearch={clearSearch}
                 onSelectEvent={selectEvent}
                 onSelectBranch={selectBranch}
                 onToggleKind={toggleEventKind}

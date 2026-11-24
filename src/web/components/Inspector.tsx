@@ -16,7 +16,7 @@ import { formatClock, formatDateTime, formatDuration } from '../../core/format'
 import type { CapturedToolDefinition, SystemPromptComposition, TimelineEvent } from '../../core/types'
 import { parseSystemPromptSections } from '../../core/prompt-sections'
 import { getToolProvenanceLabel, resolveToolProvenance, sanitizeToolForApi } from '../../core/tool-provenance'
-import { MIN_SEARCH_QUERY_LENGTH } from '../session-view-controller'
+import { searchHitSpans } from '../session-view-controller'
 import { PromptDiffView } from './PromptDiffView'
 import { useI18n } from '../i18n'
 import { useCopyFeedback } from '../use-copy-feedback'
@@ -257,29 +257,23 @@ function EventOverview({ event }: { event: TimelineEvent }) {
   )
 }
 
-function searchHighlightRegex(query: string): RegExp | null {
-  const trimmed = query.trim()
-  if (trimmed.length < MIN_SEARCH_QUERY_LENGTH) return null
-  return new RegExp(trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
-}
-
 /**
  * Splits plain text around case-insensitive matches, wrapping each one in
  * `<mark class="sv-search-hit">`. Produces React nodes only — never HTML —
  * so this stays confined to plain-text rendering paths (no markdown / tool-code).
+ * Matching goes through the controller's shared span finder, so highlight and
+ * count agree structurally.
  */
 function highlightPlainText(text: string, query: string | undefined): ReactNode {
-  const regex = query ? searchHighlightRegex(query) : null
-  if (!regex || !text) return text
+  const spans = searchHitSpans(text, query)
+  if (!spans) return text
   const nodes: ReactNode[] = []
   let cursor = 0
-  let match: RegExpExecArray | null
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > cursor) nodes.push(text.slice(cursor, match.index))
-    nodes.push(<mark className="sv-search-hit" key={nodes.length}>{match[0]}</mark>)
-    cursor = match.index + match[0].length
+  for (const span of spans) {
+    if (span.start > cursor) nodes.push(text.slice(cursor, span.start))
+    nodes.push(<mark className="sv-search-hit" key={nodes.length}>{text.slice(span.start, span.end)}</mark>)
+    cursor = span.end
   }
-  if (cursor === 0) return text
   if (cursor < text.length) nodes.push(text.slice(cursor))
   return nodes
 }
